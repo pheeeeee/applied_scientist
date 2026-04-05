@@ -105,7 +105,7 @@ The Explorer reads the knowledge base continuously, adapting its literature sear
 ### 1. Install
 
 ```bash
-git clone https://github.com/<your-org>/applied-scientist.git
+git clone https://github.com/pheeeeee/applied-scientist.git
 cd applied-scientist
 pip install -e ".[all]"       # all LLM backends
 # or: pip install -e ".[anthropic]"   # Claude only
@@ -1130,7 +1130,7 @@ Key differentiators:
   title={Applied Scientist: Autonomous Multi-Agent System for ML Experiment Automation},
   author={},
   year={2026},
-  url={https://github.com/<your-org>/applied-scientist}
+  url={https://github.com/pheeeeee/applied-scientist}
 }
 ```
 
