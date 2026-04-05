@@ -1,0 +1,137 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1775361068358,
+  "projectRoot": "/storage/project/r-jli3175-0/jphee3/autoresearch/applied-scientist",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Python",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "pyproject.toml"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "pytest",
+        "version": null,
+        "category": "testing"
+      }
+    ],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": "pytest",
+    "lintCommand": "ruff check",
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs",
+      "tests"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "applied_scientist": {
+      "path": "applied_scientist",
+      "purpose": null,
+      "fileCount": 6,
+      "lastAccessed": 1775361068264,
+      "keyFiles": [
+        "__init__.py",
+        "__main__.py",
+        "config.py",
+        "run_experiment.py",
+        "system.py"
+      ]
+    },
+    "applied_scientist.egg-info": {
+      "path": "applied_scientist.egg-info",
+      "purpose": null,
+      "fileCount": 6,
+      "lastAccessed": 1775361068268,
+      "keyFiles": [
+        "PKG-INFO",
+        "SOURCES.txt",
+        "dependency_links.txt",
+        "entry_points.txt",
+        "requires.txt"
+      ]
+    },
+    "configs": {
+      "path": "configs",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1775361068352,
+      "keyFiles": [
+        "default.yaml"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 1,
+      "lastAccessed": 1775361068353,
+      "keyFiles": [
+        "implementation_plan.md"
+      ]
+    },
+    "tasks": {
+      "path": "tasks",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1775361068354,
+      "keyFiles": []
+    },
+    "tests": {
+      "path": "tests",
+      "purpose": "Test files",
+      "fileCount": 14,
+      "lastAccessed": 1775361068355,
+      "keyFiles": [
+        "__init__.py",
+        "conftest.py",
+        "test_agents.py",
+        "test_config.py",
+        "test_cost_tracker.py"
+      ]
+    },
+    "configs/examples": {
+      "path": "configs/examples",
+      "purpose": "Example code",
+      "fileCount": 3,
+      "lastAccessed": 1775361068356,
+      "keyFiles": [
+        "mappo_spec.yaml",
+        "ppo_baseline_spec.yaml",
+        "soccer_twos.yaml"
+      ]
+    },
+    "tasks/examples": {
+      "path": "tasks/examples",
+      "purpose": "Example code",
+      "fileCount": 1,
+      "lastAccessed": 1775361068357,
+      "keyFiles": [
+        "__init__.py"
+      ]
+    }
+  },
+  "hotPaths": [],
+  "userDirectives": []
+}

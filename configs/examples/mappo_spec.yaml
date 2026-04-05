@@ -1,0 +1,36 @@
+name: mappo
+description: "Multi-Agent PPO with centralized critic for 2v2 soccer"
+source_paper: "Yu et al. 2022 — The Surprising Effectiveness of PPO in Cooperative MARL"
+architecture:
+  type: centralized_critic_ppo
+  key_idea: "Centralized value function sees all agents' observations while policies remain independent"
+  policy:
+    structure: "FC, 2 layers, 256 units, ReLU"
+    input: "per-agent observation (84 floats)"
+    output: "action logits (27)"
+    sharing: "independent (no parameter sharing)"
+  critic:
+    structure: "FC, 2 layers, 256 units, ReLU"
+    input: "concatenated observations from all 4 agents (4 x 84 = 336 floats)"
+    output: "single value estimate"
+    sharing: "shared across all agents"
+why_it_might_work: "Centralized training with decentralized execution enables coordination without communication overhead"
+task_config:
+  variation: multiagent_player
+  single_player: false
+  flatten_branched: true
+training_config:
+  lr: 0.0003
+  train_batch_size: 12000
+  rollout_fragment_length: 1000
+  gamma: 0.99
+  entropy_coeff: 0.01
+resource_estimate:
+  memory: "~6GB"
+  training_time: "~30 minutes"
+confidence: high
+category: algorithm
+tags: [marl, centralized_critic, ppo]
+tunable_hyperparameters:
+  lr: {type: log_uniform, low: 1.0e-5, high: 1.0e-2}
+  entropy_coeff: {type: log_uniform, low: 0.001, high: 0.1}

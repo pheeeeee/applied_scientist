@@ -1,0 +1,2 @@
+[console_scripts]
+applied-scientist = applied_scientist.__main__:main

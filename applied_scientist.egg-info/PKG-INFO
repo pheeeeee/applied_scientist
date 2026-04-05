@@ -1,0 +1,24 @@
+Metadata-Version: 2.4
+Name: applied-scientist
+Version: 0.1.0
+Requires-Python: >=3.10
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: jinja2>=3.1
+Provides-Extra: anthropic
+Requires-Dist: anthropic>=0.30; extra == "anthropic"
+Provides-Extra: openai
+Requires-Dist: openai>=1.30; extra == "openai"
+Provides-Extra: gemini
+Requires-Dist: google-generativeai>=0.5; extra == "gemini"
+Provides-Extra: search
+Requires-Dist: requests>=2.31; extra == "search"
+Provides-Extra: pdf
+Requires-Dist: pypdf2>=3.0; extra == "pdf"
+Requires-Dist: beautifulsoup4>=4.12; extra == "pdf"
+Provides-Extra: tuning
+Requires-Dist: optuna>=3.6; extra == "tuning"
+Provides-Extra: all
+Requires-Dist: applied-scientist[anthropic,gemini,openai,pdf,search,tuning]; extra == "all"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-cov>=5.0; extra == "dev"

@@ -1,0 +1,28 @@
+[project]
+name = "applied-scientist"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml>=6.0",
+    "jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.30"]
+openai = ["openai>=1.30"]
+gemini = ["google-generativeai>=0.5"]
+search = ["requests>=2.31"]
+pdf = ["pypdf2>=3.0", "beautifulsoup4>=4.12"]
+tuning = ["optuna>=3.6"]
+all = ["applied-scientist[anthropic,openai,gemini,search,pdf,tuning]"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0"]
+
+[project.scripts]
+applied-scientist = "applied_scientist.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["applied_scientist*"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"

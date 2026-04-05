@@ -1,0 +1,56 @@
+# Applied Scientist — Default Configuration
+# Copy this file and edit for your setup.
+# Environment variables can be referenced with ${VAR} syntax.
+
+system:
+  time_budget: 1800              # seconds per experiment
+  n_gpus: 1                      # GPU slots in the pool
+  baseline_seeds: 3              # seeds for baseline experiments (run sequentially on 1 slot)
+  eval_samples: 100              # evaluation samples (episodes, test batches, etc.)
+  early_stop_fraction: 0.4       # kill if no improvement after this fraction of time_budget
+  max_spec_review_rounds: 3      # max Explorer-Critic review cycles before force-approve
+  queue_throttle_high: 10        # Explorer pauses above this queue depth
+  queue_throttle_low: 5          # Explorer resumes below this queue depth
+  timeout_multiplier: 2.0        # kill experiment after time_budget * this
+  cost_alert_threshold: null     # alert when cumulative LLM cost exceeds this (dollars)
+
+tuning:
+  enabled: true                  # enable Bayesian hyperparameter tuning via Optuna
+  max_iterations: 15             # max tuning trials per experiment
+  min_iterations: 3              # min tuning trials (even under queue pressure)
+
+llm:
+  explorer:
+    backend: anthropic
+    model: claude-haiku-4-5-20251001
+  critic:
+    backend: anthropic
+    model: claude-sonnet-4-6
+  builder:
+    backend: anthropic
+    model: claude-sonnet-4-6
+  orchestrator:
+    backend: anthropic
+    model: claude-haiku-4-5-20251001
+
+compute:
+  backend: local                 # local | slurm
+  slurm:
+    partition: gpu
+    gres: "gpu:1"
+    mem: "48G"
+    time: "01:00:00"
+    setup_commands: []
+    # Example setup_commands:
+    #   - "source ~/miniconda3/etc/profile.d/conda.sh"
+    #   - "conda activate my_env"
+
+task:
+  module: tasks/examples/soccer_twos   # path to task adapter directory
+
+paths:
+  workspace: ./workspace
+  results: ./workspace/results
+  configs: ./workspace/configs
+  checkpoints: ./workspace/results/checkpoints
+  logs: ./workspace/results/logs
