@@ -28,22 +28,22 @@ llm:
     model: claude-sonnet-4-6
   builder:
     backend: anthropic
-    model: claude-sonnet-4-6
+    model: claude-opus-4-6
   orchestrator:
     backend: anthropic
     model: claude-haiku-4-5-20251001
 
 compute:
-  backend: local                 # local | slurm
+  backend: slurm
   slurm:
-    partition: gpu
+    partition: gpu-v100
+    account: gts-jli3175
     gres: "gpu:1"
     mem: "48G"
     time: "01:00:00"
-    setup_commands: []
-    # Example setup_commands:
-    #   - "source ~/miniconda3/etc/profile.d/conda.sh"
-    #   - "conda activate my_env"
+    setup_commands:
+      - "source /usr/local/pace-apps/manual/packages/anaconda3/2023.03/etc/profile.d/conda.sh"
+      - "conda activate soccertwos"
 
 task:
   module: tasks/examples/soccer_twos   # path to task adapter directory

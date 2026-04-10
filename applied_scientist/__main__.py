@@ -15,6 +15,8 @@ def main():
     parser.add_argument("--job-runner", default=None, help="Override compute backend")
     parser.add_argument("--test-run", action="store_true",
                         help="Validate pipeline without full run")
+    parser.add_argument("--slack", action="store_true",
+                        help="Use Slack for I/O (requires SLACK_* env vars)")
     args = parser.parse_args()
 
     system = AppliedScientistSystem(
@@ -23,6 +25,7 @@ def main():
         n_gpus=args.n_gpus,
         job_runner_override=args.job_runner,
         test_run=args.test_run,
+        slack=args.slack,
     )
     system.start()
 

@@ -10,6 +10,7 @@ from applied_scientist.tools.shell import ShellTool
 from applied_scientist.tools.git_ops import GitCommit, GitLog, GitDiff, GitReset
 from applied_scientist.tools.critic_tools import (
     SubmitSpecReview, SubmitCodeReview, SubmitInsightReview, SubmitSuggestionTriage,
+    SubmitPlanReview,
 )
 
 AGENT_TOOLS = {
@@ -17,7 +18,7 @@ AGENT_TOOLS = {
                  "search_web", "search_papers", "read_paper"],
     "critic":   ["read_file", "write_file", "list_directory",
                  "submit_review", "submit_code_review",
-                 "submit_insight_review", "submit_triage"],
+                 "submit_insight_review", "submit_triage", "submit_plan_review"],
     "builder":  ["read_file", "write_file", "edit_file", "list_directory",
                  "run_command", "git_commit", "git_log", "git_diff", "git_reset"],
     "orchestrator": ["read_file", "list_directory"],
@@ -40,6 +41,7 @@ _TOOL_CLASSES = {
     "submit_code_review": SubmitCodeReview,
     "submit_insight_review": SubmitInsightReview,
     "submit_triage": SubmitSuggestionTriage,
+    "submit_plan_review": SubmitPlanReview,
 }
 
 

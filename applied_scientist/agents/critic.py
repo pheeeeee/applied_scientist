@@ -40,6 +40,8 @@ class CriticAgent(BaseAgent):
                 for message in messages:
                     if message.type == "spec_review_request":
                         self._handle_spec_review(message)
+                    elif message.type == "plan_review_request":
+                        self._handle_plan_review(message)
                     elif message.type == "code_review_request":
                         self._handle_code_review(message)
                     elif message.type == "insight_review_request":
@@ -135,6 +137,62 @@ class CriticAgent(BaseAgent):
                 type="spec_rejected",
                 payload={"draft_path": draft_path, "round": round_num,
                          "feedback": feedback}
+            ))
+
+    def _handle_plan_review(self, message):
+        """Review a Builder implementation plan. Uses structured submit_plan_review tool."""
+        plan_content = message.payload["plan_content"]
+        spec_name = message.payload["spec_name"]
+        spec_content = message.payload.get("spec_content", "")
+        round_num = message.payload.get("round", 1)
+        max_rounds = self.config.system.max_spec_review_rounds
+
+        self.chat(
+            f"## Review implementation plan for: {spec_name} "
+            f"(round {round_num}/{max_rounds})\n\n"
+            f"### Experiment Spec\n```yaml\n{spec_content}\n```\n\n"
+            f"### Implementation Plan (PLAN.md)\n{plan_content}\n\n"
+            f"## Review checklist:\n"
+            f"1. Does the plan list ALL files needed for a self-contained experiment?\n"
+            f"2. Does it include a train.py with the required CLI interface "
+            f"(--seed, --time-budget, --log-path, --checkpoint-dir)?\n"
+            f"3. Does train.py write progress.json periodically?\n"
+            f"4. Does train.py print final results as JSON on the last line?\n"
+            f"5. Are the key classes/functions described with enough detail to implement?\n"
+            f"6. Does the architecture match the spec?\n"
+            f"7. Are there environment compatibility issues "
+            f"(Python 3.8, Ray 1.4.0, PyTorch 1.8.1)?\n"
+            f"8. Will it fit in GPU memory (~12GB)?\n\n"
+            f"{'FINAL ROUND: force-approve with your fixes.' if round_num >= max_rounds else ''}\n\n"
+            f"Use the submit_plan_review tool to submit your decision."
+        )
+
+        decision = self._parse_last_tool_result("submit_plan_review")
+        verdict = decision.get("verdict", "approved") if decision else "approved"
+        feedback = decision.get("feedback", "") if decision else ""
+
+        self.review_logger.log(
+            type="plan_review", spec_name=spec_name,
+            verdict=verdict, round=round_num,
+            feedback=str(feedback)[:500])
+
+        if verdict == "approved":
+            self.bus.post(AgentMessage(
+                sender="critic", recipient="builder",
+                type="plan_approved",
+                payload={"spec_name": spec_name, "feedback": feedback}
+            ))
+        else:
+            self.bus.post(AgentMessage(
+                sender="critic", recipient="builder",
+                type="plan_rejected",
+                payload={
+                    "spec_name": spec_name,
+                    "feedback": feedback,
+                    "missing_files": decision.get("missing_files", []) if decision else [],
+                    "concerns": decision.get("concerns", []) if decision else [],
+                    "round": round_num,
+                }
             ))
 
     def _handle_code_review(self, message):

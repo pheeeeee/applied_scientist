@@ -21,7 +21,7 @@ Four AI agents — **Explorer** (literature), **Critic** (quality gate), **Build
 - **Any ML task** can be plugged in via a Task Adapter (RL, NLP, CV, etc.)
 - **Any LLM** can power the agents (Claude, GPT, Gemini, Llama, or any OpenAI-compatible endpoint)
 - **Any compute backend** can run training (SLURM, local GPU, cloud)
-- **Minimal blocking** — inter-agent communication is async, except plan reviews (Builder waits for Critic approval before implementing)
+- **No agent ever blocks another** — all inter-agent communication is async
 
 ---
 
@@ -56,17 +56,9 @@ The Explorer agent continuously reads research papers in expanding scope: first 
 
 The Critic picks up review requests from its inbox in priority order. It checks completeness, accuracy, resource feasibility, and deduplication (rejecting specs for experiments already completed or queued). It also checks whether a control variant is needed (max 3 review rounds). The Critic uses structured tool calls for all decisions, ensuring reliable parsing. Approved specs are scored and inserted into a ranked priority queue.
 
-**Stage 2 — Plan, Build & Run (Builder + Critic)**
+**Stage 2 — Build & Run (Builder + Critic)**
 
-The Builder manages a pool of GPU slots. Whenever a slot frees up, the Builder pulls the top-ranked spec from the queue and follows a structured implementation pipeline:
-
-1. **Plan** — The Builder writes a `PLAN.md` describing every file it will create, key classes/functions, and how components connect. Each experiment gets its own **self-contained directory** (`workspace/experiments/<name>/`) with all code needed to train — this allows fundamentally different algorithms (PPO, MADDPG, SAC, hierarchical RL) rather than just model swaps.
-
-2. **Plan Review (blocking)** — The Critic reviews the implementation plan for completeness, architecture match, environment compatibility, and the `train.py` contract (CLI args, progress reporting, result output). If rejected, the Builder revises (max 3 rounds). This is the only blocking inter-agent call — it's cheap (one LLM round) but prevents wasted GPU time from flawed implementations.
-
-3. **Implement** — Once the plan is approved, the Builder reads the baseline `train.py` as a reference before implementing, then writes all files into the experiment directory using `write_file` tool calls.
-
-4. **Validate & Submit** — Pre-flight validation (syntax check + 10-second smoke test), with up to 3 attempts to fix validation failures before abandoning the experiment. On success: git commit and training job submission. Code reviews for structural changes are submitted to the Critic non-blockingly — the job is submitted optimistically while the review is pending.
+The Builder manages a pool of GPU slots. Whenever a slot frees up, the Builder pulls the top-ranked spec from the queue, implements it in code, runs a **pre-flight validation** (syntax check + 60-second smoke test), commits the code (for reproducibility), and submits the training job. Code reviews for structural changes are submitted to the Critic non-blockingly — the job is submitted optimistically while the review is pending.
 
 Baseline experiments run with multiple seeds **sequentially on one slot** (not consuming the entire GPU pool). An **early-stopping** mechanism polls a progress file written by the training script, killing experiments showing less than 10% of baseline performance after 40% of the time budget. No GPU ever waits for another — the pool is always maximally utilized.
 
@@ -82,7 +74,7 @@ The Explorer reads the knowledge base continuously, adapting its literature sear
 
 **Required:**
 
-- Python 3.10+ for the orchestrator (training environments may use Python 3.8+)
+- Python 3.10+
 - git
 - At least one LLM API key (Anthropic, OpenAI, or Google)
 - At least one GPU for training (local or cluster)
@@ -122,54 +114,11 @@ pip install -e ".[all]"       # all LLM backends
 
 ### 2. Set API keys
 
-**On your own machine (single user):**
-
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."    # if using Claude
-export OPENAI_API_KEY="sk-..."           # if using GPT
-export GOOGLE_API_KEY="AI..."            # if using Gemini
+export ANTHROPIC_API_KEY=sk-ant-...    # if using Claude
+export OPENAI_API_KEY=sk-...           # if using GPT
+export GOOGLE_API_KEY=AI...            # if using Gemini
 ```
-
-Add these to your `.bashrc` or `.zshrc` to persist across sessions.
-
-**On a shared server / HPC cluster (e.g., PACE, SLURM):**
-
-On multi-user systems, store keys in a dedicated file with strict permissions so other users cannot read them:
-
-```bash
-mkdir -p ~/.secrets
-chmod 700 ~/.secrets
-
-cat > ~/.secrets/autoresearch.env << 'EOF'
-export ANTHROPIC_API_KEY="sk-ant-..."
-export OPENAI_API_KEY="sk-..."
-export GOOGLE_API_KEY="AI..."
-EOF
-
-chmod 600 ~/.secrets/autoresearch.env
-```
-
-Then source it before running:
-
-```bash
-source ~/.secrets/autoresearch.env
-```
-
-For SLURM job scripts, source at the top:
-
-```bash
-#!/bin/bash
-#SBATCH --partition=gpu
-source ~/.secrets/autoresearch.env
-python -m applied_scientist --config configs/default.yaml --task tasks/examples/soccer_twos
-```
-
-Why this approach:
-- `chmod 600` — only your user can read the file, other users on the cluster cannot
-- Outside the repo — cannot be accidentally git committed
-- Not in `.bashrc` — keys are only loaded when you need them, not in every shell session
-
-**Do not** put API keys in `.env` files inside the repo, config YAML files, Python source files, or command-line arguments (visible in `ps aux`).
 
 ### 3. Configure
 
@@ -210,7 +159,7 @@ Before running, verify everything is in place:
     [ ] n_gpus matches your available GPU slots
 
 [ ] Environment
-    [ ] Python 3.10+ (orchestrator) with applied-scientist installed
+    [ ] Python 3.10+ with applied-scientist installed
     [ ] All task dependencies installed (Ray, PyTorch, etc.)
     [ ] LLM API key(s) set as environment variables
     [ ] Outbound HTTPS access for LLM API calls
@@ -234,7 +183,7 @@ Run a dry run to verify the full pipeline without burning GPU hours or LLM budge
 # Validates: config loading, task adapter import, LLM connectivity,
 # compute backend access, workspace initialization, baseline spec injection,
 # one full cycle (spec → review → implement → validate → submit → complete)
-# using a 10-second time budget and a single GPU slot.
+# using a 60-second time budget and a single GPU slot.
 python -m applied_scientist \
   --config configs/my_config.yaml \
   --task tasks/examples/soccer_twos \
@@ -251,8 +200,8 @@ The test run will:
 6. Inject baseline spec and run one full cycle:
    - Explorer drafts one spec (using LLM)
    - Critic reviews it (using LLM)
-   - Builder implements, validates (10-second smoke test), commits, submits
-   - Training runs with 10-second time budget on 1 GPU
+   - Builder implements, validates (60-second smoke test), commits, submits
+   - Training runs with 60-second time budget on 1 GPU
    - Builder records results and writes insight
 7. Print summary of what worked and what failed
 
@@ -306,14 +255,6 @@ your-project/                          # where you ran the command
     │   ├── drafts/                    # specs under review
     │   ├── experiments/               # approved specs
     │   └── priority_queue.yaml        # ranked queue
-    ├── experiments/                    # self-contained experiment directories
-    │   └── <experiment>/
-    │       ├── PLAN.md                # Critic-reviewed implementation plan
-    │       ├── spec.yaml              # copy of experiment spec
-    │       ├── train.py               # self-contained training script
-    │       ├── model.py               # model/policy code
-    │       ├── [other files]          # as needed per algorithm
-    │       └── run_<job_id>.sh        # saved sbatch script
     ├── results/
     │   ├── results.tsv                # experiment leaderboard
     │   ├── knowledge.md               # curated insights
@@ -380,7 +321,7 @@ llm:
     model: claude-sonnet-4-6
   builder:
     backend: anthropic
-    model: claude-opus-4-6
+    model: claude-sonnet-4-6
   orchestrator:
     backend: anthropic
     model: claude-haiku-4-5-20251001
@@ -389,7 +330,6 @@ compute:
   backend: slurm                 # slurm | local
   slurm:
     partition: gpu
-    account: my-account          # required on most HPC clusters
     gres: "gpu:1"
     mem: "48G"
     time: "01:00:00"
@@ -513,7 +453,7 @@ llm:
     model: claude-sonnet-4-6
   builder:
     backend: anthropic
-    model: claude-opus-4-6
+    model: claude-sonnet-4-6
   orchestrator:
     backend: anthropic
     model: claude-haiku-4-5-20251001
@@ -558,7 +498,7 @@ llm:
     model: gpt-4o
   builder:
     backend: anthropic
-    model: claude-opus-4-6
+    model: claude-sonnet-4-6
   orchestrator:
     backend: gemini
     model: gemini-2.5-flash
@@ -789,7 +729,7 @@ Here is exactly what happens when one experiment runs, from start to finish:
 
 5. PRE-FLIGHT VALIDATION
    Syntax check: python -c "import ..." → passes
-   Smoke test: 10-second training run → completes without crash
+   Smoke test: 60-second training run → completes without crash
    Validation passes → proceed to submission.
 
 6. CODE REVIEW (non-blocking)
@@ -989,7 +929,6 @@ Status values: `baseline`, `keep`, `crash`, `early_stop`, `timeout`, `validation
 |------|--------|--------|-------------|
 | `.state/gpu_slots.json` | GPUPool (auto-persists on every assign/release) | System on restart | Current GPU slot assignments. On restart, System reconciles this with actual job status from the compute backend. |
 | `.state/pending_messages.json` | MessageBus (auto-persists on every post) | System on restart | Unprocessed inter-agent messages. Reloaded into agent inboxes on restart so no messages are lost. |
-| `configs/drafts/*.yaml` | Explorer | System on restart, Critic | Unreviewed draft specs. On restart, the system scans this directory and re-injects any drafts not yet in `configs/experiments/` into the Critic's inbox for review. |
 
 ### Who Writes What — Summary
 
@@ -997,7 +936,7 @@ Status values: `baseline`, `keep`, `crash`, `early_stop`, `timeout`, `validation
 |-------|--------|-------|
 | **Explorer** | `configs/drafts/*.yaml`, `results/explorer_journal.jsonl` | `results/results.tsv`, `results/knowledge.md` (synthesis), `configs/drafts/` + `configs/experiments/` (name dedup) |
 | **Critic** | Moves `drafts/` → `configs/experiments/`, inserts into `priority_queue.yaml`, appends to `results/review_log.jsonl`, appends to `results/ideas_for_system2.md` | `configs/drafts/*.yaml`, `results/results.tsv`, `results/knowledge.md`, `priority_queue.yaml` |
-| **Builder** | Creates `experiments/<name>/` directories (PLAN.md, spec.yaml, train.py, model code, sbatch scripts), `git commit`, appends to `results/results.tsv`, writes to `results/knowledge.md` (approved insights only), creates `results/logs/<name>/` | `configs/experiments/*.yaml`, `experiments/<name>/spec.yaml`, `priority_queue.yaml` (pop), `results/results.tsv`, `results/logs/<name>/progress.json`, baseline `tasks/.../train.py` (as reference) |
+| **Builder** | Edits task source code, `git commit`, appends to `results/results.tsv`, writes to `results/knowledge.md` (approved insights only), creates `results/logs/<name>/` | `configs/experiments/*.yaml`, `priority_queue.yaml` (pop), `results/results.tsv`, `results/logs/<name>/progress.json` |
 | **Orchestrator** | Nothing persistent | Everything (read-only, for status display) |
 | **Training script** | `results/logs/<name>/progress.json`, `results/checkpoints/<name>/`, stdout/stderr | Task source code |
 | **System** | `.state/gpu_slots.json`, `.state/pending_messages.json`, `results/system_events.jsonl`, `git init` | Config YAML, all state files on recovery |
@@ -1073,7 +1012,7 @@ Baseline seeds run sequentially on one slot, leaving other GPUs free for experim
 
 ### Robustness
 
-- **Crash recovery:** GPU slot assignments and pending messages are persisted to `.state/`. On restart, the system reconciles with `sacct` or process state. Unreviewed draft specs in `configs/drafts/` are automatically re-injected into the Critic's inbox so no work is lost between runs.
+- **Crash recovery:** GPU slot assignments and pending messages are persisted to `.state/`. On restart, the system reconciles with `sacct` or process state.
 - **Watchdog:** Monitors agent threads; restarts crashed threads up to 3 times.
 - **Atomic writes:** All shared state files use atomic write-then-rename to prevent corruption.
 - **Context management:** Agent conversations are automatically trimmed when approaching context limits.

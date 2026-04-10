@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import queue as queue_mod
 import time
 
 from applied_scientist.agents.base import BaseAgent
@@ -13,7 +14,8 @@ class OrchestratorAgent(BaseAgent):
 
     def __init__(self, llm, tools, system_prompt, message_bus, cost_tracker,
                  priority_queue, knowledge_base, results_tracker, gpu_pool,
-                 system_logger: EventLogger, agents_ref: dict):
+                 system_logger: EventLogger, agents_ref: dict,
+                 report_fn=None, io=None):
         super().__init__("orchestrator", llm, tools, system_prompt, message_bus, cost_tracker)
         self.queue = priority_queue
         self.kb = knowledge_base
@@ -21,13 +23,32 @@ class OrchestratorAgent(BaseAgent):
         self.pool = gpu_pool
         self.system_logger = system_logger
         self.agents = agents_ref
+        self._report_fn = report_fn
+        self.io = io  # None = terminal mode (stdin/stdout)
+
+    def _output(self, text: str):
+        """Send text to user. Routes through Slack/Telegram when io is set."""
+        if self.io:
+            self.io.send(text)
+        else:
+            print(text)
 
     def run(self):
-        """Main loop. Reads stdin, interprets with LLM, routes."""
+        """Main loop. Reads user input, interprets with LLM, routes."""
         while not self._stopped:
             try:
                 self._display_alerts()
-                user_input = input("> ")
+
+                if self.io:
+                    # Remote mode: use timeout so we loop back to display alerts
+                    try:
+                        user_input = self.io.receive(timeout=2.0)
+                    except queue_mod.Empty:
+                        continue  # no message — loop back to check alerts
+                else:
+                    # Terminal mode: blocking input with prompt
+                    user_input = input("> ")
+
             except EOFError:
                 continue
 
@@ -48,7 +69,7 @@ class OrchestratorAgent(BaseAgent):
                 f"Interpret the user's intent. If it's a query, answer from status. "
                 f"If it's a command, state what action you're taking."
             )
-            print(f"  {response}\n")
+            self._output(response)
             self._route_command(user_input, response)
             self.reset_conversation()
 
@@ -56,46 +77,57 @@ class OrchestratorAgent(BaseAgent):
         """Handle commands that don't need LLM interpretation."""
         cmd = user_input.strip().lower()
         if cmd == "status":
-            print(f"  {self._build_status()}\n")
+            self._output(self._build_status())
             return True
         elif cmd == "results":
-            print(f"  {self.results.get_summary()}\n")
+            self._output(self.results.get_summary())
             return True
         elif cmd == "knowledge":
-            print(f"  {self.kb.get_synthesis()}\n")
+            self._output(self.kb.get_synthesis())
             return True
         elif cmd == "queue":
             items = self.queue.peek(10)
-            for spec, score in items:
-                print(f"  {score:.1f}  {spec.name}: {spec.description}")
-            if not items:
-                print("  Queue is empty.")
-            print()
+            if items:
+                lines = [f"  {score:.1f}  {spec.name}: {spec.description}"
+                         for spec, score in items]
+                self._output("\n".join(lines))
+            else:
+                self._output("Queue is empty.")
             return True
         elif cmd == "cost":
-            print(f"  {self.cost.get_summary()}\n")
+            self._output(self.cost.get_summary())
+            return True
+        elif cmd == "report":
+            if self._report_fn:
+                path = self._report_fn()
+                if path:
+                    self._output(f"Report saved to {path}.md / .json")
+                else:
+                    self._output("Report generation failed. Check system_events.jsonl.")
+            else:
+                self._output("Report function not available.")
             return True
         elif cmd == "pause":
             self.bus.post(AgentMessage(
                 sender="orchestrator", recipient="builder",
                 type="command", payload={"action": "pause"}
             ))
-            print("  Builder paused. Running experiments will finish.\n")
+            self._output("Builder paused. Running experiments will finish.")
             return True
         elif cmd == "resume":
             self.bus.post(AgentMessage(
                 sender="orchestrator", recipient="builder",
                 type="command", payload={"action": "resume"}
             ))
-            print("  Builder resumed.\n")
+            self._output("Builder resumed.")
             return True
         elif cmd.startswith("gpus "):
             try:
                 n = int(cmd.split()[1])
                 self.pool.resize(n)
-                print(f"  GPU pool resized to {n} slots.\n")
+                self._output(f"GPU pool resized to {n} slots.")
             except (ValueError, IndexError):
-                print("  Usage: gpus N\n")
+                self._output("Usage: gpus N")
             return True
         return False
 
@@ -113,9 +145,9 @@ class OrchestratorAgent(BaseAgent):
                 type="command",
                 payload={"action": "user_message", "message": message},
             ))
-            print(f"  Message sent to {target.title()}.\n")
+            self._output(f"Message sent to {target.title()}.")
         else:
-            print(f"  Unknown agent: {target}. Available: explorer, critic, builder\n")
+            self._output(f"Unknown agent: {target}. Available: explorer, critic, builder")
 
     def _route_command(self, user_input: str, response: str):
         """Parse LLM response and dispatch commands to agents."""
@@ -181,4 +213,8 @@ class OrchestratorAgent(BaseAgent):
         """Display any pending alerts from other agents."""
         for msg in self._process_inbox():
             if msg.type == "alert":
-                print(f"\n  [ALERT] {msg.payload.get('message', '')}\n> ", end="", flush=True)
+                alert_text = f"[ALERT] {msg.payload.get('message', '')}"
+                if self.io:
+                    self.io.send(alert_text)
+                else:
+                    print(f"\n  {alert_text}\n> ", end="", flush=True)

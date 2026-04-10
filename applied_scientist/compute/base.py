@@ -15,7 +15,8 @@ class JobStatus:
 class JobRunner(ABC):
     @abstractmethod
     def submit(self, command: str, job_name: str,
-               resources: dict | None = None) -> str:
+               resources: dict | None = None,
+               scripts_dir: str | None = None) -> str:
         """Submit a job. Return job ID."""
 
     @abstractmethod

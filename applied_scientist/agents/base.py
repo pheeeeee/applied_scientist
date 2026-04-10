@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from applied_scientist.llm.base import LLMBackend, LLMMessage, LLMResponse
 from applied_scientist.tools.base import Tool
 from applied_scientist.core.message_bus import MessageBus, AgentMessage
@@ -95,3 +97,39 @@ class BaseAgent:
             sender=self.role, recipient="orchestrator",
             type="alert", payload={"alert_type": alert_type, "message": message}
         ))
+
+    def _wait_for_message(self, msg_type: str | tuple[str, ...] | None = None,
+                          match_fn=None,
+                          timeout: float = 300.0) -> AgentMessage | None:
+        """Block until a matching message arrives.
+
+        Args:
+            msg_type: Single type string, tuple of types, or None (match any type).
+            match_fn: Optional callable(AgentMessage) -> bool for additional filtering.
+            timeout: Max seconds to wait.
+
+        Other messages that arrive while waiting are re-injected into the bus
+        so they are not lost. Returns the matched message, or None on timeout.
+        """
+        deadline = time.time() + timeout
+        buffered: list[AgentMessage] = []
+
+        if isinstance(msg_type, str):
+            msg_type = (msg_type,)
+
+        while time.time() < deadline and not self._stopped:
+            msg = self.bus.poll(self.role, timeout=2.0)
+            if msg is None:
+                continue
+            type_match = msg_type is None or msg.type in msg_type
+            fn_match = match_fn is None or match_fn(msg)
+            if type_match and fn_match:
+                for buffered_msg in buffered:
+                    self.bus.post(buffered_msg)
+                return msg
+            else:
+                buffered.append(msg)
+
+        for buffered_msg in buffered:
+            self.bus.post(buffered_msg)
+        return None

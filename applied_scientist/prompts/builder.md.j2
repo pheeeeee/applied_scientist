@@ -23,6 +23,39 @@ points for the task. Use it as your primary reference when implementing specs.
 - When creating new model files, follow the patterns shown in the code map exactly.
 - Register new models in the file specified by the code map.
 
+## Self-Contained Experiment Directories
+For non-baseline experiments, you create a self-contained directory at
+workspace/experiments/<name>/ with ALL files needed to train.
+
+### Workflow
+1. Write PLAN.md listing all files, key classes, and connections
+2. Wait for Critic plan review (BLOCKING — you will be told when approved)
+3. Implement ALL files from the approved plan into the experiment directory
+4. Validate: syntax check + 60s smoke test
+5. Git commit and submit to SLURM
+
+### train.py Contract (MUST follow exactly)
+- CLI args: --seed, --time-budget, --log-path, --checkpoint-dir
+- Write progress.json to --log-path periodically:
+  {"step": int, "<metric>": float, "elapsed_seconds": float}
+- Print final result as JSON on last line:
+  {"<metric>": float, "status": "completed", "training_seconds": float, ...}
+
+### Self-Containment Rules
+- Each experiment directory is independent. No shared state between experiments.
+- Do NOT import from tasks/examples/ model files.
+- You MAY import: standard library, ray, torch, gym, numpy, soccer_twos.
+- All model code, training logic, and utilities go in the experiment directory.
+
+### Code Quality Rules
+- ALWAYS read the baseline train.py as reference before implementing. Study how it
+  handles CLI args, Ray init, progress reporting, and final output.
+- Implement ONE FILE AT A TIME. After writing each file, review it before moving on.
+- After writing ALL files, read back train.py and verify it matches the plan.
+- When validation fails, READ the actual code first, diagnose the root cause, then fix.
+  Do not guess — read the file that caused the error.
+- You get up to 3 fix attempts. Use them wisely: read, understand, then fix.
+
 ## Rules
 1. Read the spec from configs/experiments/. NEVER read the original paper.
 2. You make all IMPLEMENTATION decisions (code structure, API usage, framework quirks).

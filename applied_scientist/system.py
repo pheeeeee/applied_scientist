@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import signal
 import threading
 import time
+from datetime import datetime, timezone
+
+import yaml
 
 from applied_scientist.config import Config
 from applied_scientist.core.spec import ExperimentSpec
@@ -11,7 +16,7 @@ from applied_scientist.core.results_tracker import ExperimentResult, ResultsTrac
 from applied_scientist.core.priority_queue import PriorityQueue
 from applied_scientist.core.knowledge_base import KnowledgeBase
 from applied_scientist.core.gpu_pool import GPUPool
-from applied_scientist.core.message_bus import MessageBus, AgentMessage
+from applied_scientist.core.message_bus import MessageBus, AgentMessage, PRIORITY_SPEC_REVIEW
 from applied_scientist.core.cost_tracker import CostTracker
 from applied_scientist.core.event_logger import EventLogger
 from applied_scientist.agents.explorer import ExplorerAgent
@@ -28,8 +33,9 @@ from applied_scientist.tuning import HyperparameterTuner
 class AppliedScientistSystem:
     def __init__(self, config_path: str, task_module: str,
                  n_gpus: int = None, job_runner_override: str = None,
-                 test_run: bool = False):
+                 test_run: bool = False, slack: bool = False):
         self.test_run = test_run
+        self.slack = slack
 
         # Load config
         self.config = Config.from_yaml(config_path)
@@ -69,6 +75,25 @@ class AppliedScientistSystem:
                             os.path.join(state_dir, "gpu_slots.yaml"))
         self.bus = MessageBus(os.path.join(state_dir, "pending_messages.json"))
         self.cost_tracker = CostTracker()
+
+        # CLI flag overrides config
+        if not self.slack and self.config.interface.backend == "slack":
+            self.slack = True
+
+        # Initialize Slack bridge (if enabled)
+        self.slack_io = None
+        self.bus_relay = None
+        if self.slack:
+            from slack_bridge import SlackIO, BusRelay
+            self.slack_io = SlackIO.from_env()
+            self.slack_io.start()
+            if os.environ.get("SLACK_FEED_CHANNEL"):
+                self.bus_relay = BusRelay(
+                    self.bus,
+                    self.slack_io.bridge,
+                    feed_channel=os.environ["SLACK_FEED_CHANNEL"],
+                )
+                self.bus_relay.start()
 
         # Initialize LLM backends
         self.llms = {}
@@ -119,9 +144,18 @@ class AppliedScientistSystem:
                 get_tools("orchestrator", self.config.paths.workspace),
                 self.prompts["orchestrator"], self.bus, self.cost_tracker,
                 self.queue, self.kb, self.results, self.pool,
-                self.system_logger, {}),
+                self.system_logger, {},
+                report_fn=self.generate_report,
+                io=self.slack_io),
         }
         self.agents["orchestrator"].agents = self.agents
+
+    def _system_output(self, text: str):
+        """Output system message. Routes through Slack when available, else print()."""
+        if self.slack_io:
+            self.slack_io.send(text)
+        else:
+            print(text)
 
     def start(self):
         if self.test_run:
@@ -132,6 +166,7 @@ class AppliedScientistSystem:
         self._inject_random_baseline()
         self._inject_baseline()
         self._recover_state()
+        self._recover_drafts()
 
         self.threads = {}
         for name in ["explorer", "critic", "builder"]:
@@ -143,15 +178,19 @@ class AppliedScientistSystem:
             target=self._watchdog, name="watchdog", daemon=True)
         self._watchdog_thread.start()
 
-        print(f"Applied Scientist started.")
-        print(f"  Task: {self.task.name}")
-        print(f"  Metric: {self.task.metric[0]} ({self.task.metric[1]})")
-        print(f"  GPUs: {self.config.system.n_gpus}")
-        print(f"  Tuning: {'enabled' if self.config.tuning.enabled else 'disabled'}")
-        print(f"  LLMs: Explorer={self.llms['explorer'].get_model_id()}, "
-              f"Critic={self.llms['critic'].get_model_id()}, "
-              f"Builder={self.llms['builder'].get_model_id()}")
-        print()
+        banner = (
+            f"Applied Scientist started.\n"
+            f"  Task: {self.task.name}\n"
+            f"  Metric: {self.task.metric[0]} ({self.task.metric[1]})\n"
+            f"  GPUs: {self.config.system.n_gpus}\n"
+            f"  Tuning: {'enabled' if self.config.tuning.enabled else 'disabled'}\n"
+            f"  LLMs: Explorer={self.llms['explorer'].get_model_id()}, "
+            f"Critic={self.llms['critic'].get_model_id()}, "
+            f"Builder={self.llms['builder'].get_model_id()}"
+        )
+        self._system_output(banner)
+
+        signal.signal(signal.SIGTERM, lambda *_: self.stop())
 
         try:
             self.agents["orchestrator"].run()
@@ -163,9 +202,160 @@ class AppliedScientistSystem:
             agent._stopped = True
         self.queue.save()
         self.pool._persist()
-        print(f"\nApplied Scientist stopped.")
-        print(f"  Total cost: ${self.cost_tracker.get_total_cost():.2f}")
-        print(f"  Results saved to {self.config.paths.results}")
+        report_path = self.generate_report()
+
+        shutdown_msg = (
+            f"Applied Scientist stopped.\n"
+            f"  Total cost: ${self.cost_tracker.get_total_cost():.2f}\n"
+            f"  Results saved to {self.config.paths.results}"
+        )
+        if report_path:
+            shutdown_msg += f"\n  Report saved to {report_path}.md / .json"
+
+        # Send shutdown message BEFORE stopping the bridge
+        self._system_output(shutdown_msg)
+
+        # Stop Slack bridge and relay
+        if self.bus_relay:
+            self.bus_relay.stop()
+        if self.slack_io:
+            self.slack_io.stop()
+
+    def generate_report(self) -> str | None:
+        """Generate timestamped report combining results with full experiment specs.
+        Returns the base path (without extension) or None on failure."""
+        try:
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+            base_path = os.path.join(self.config.paths.results, f"report_{timestamp}")
+            experiments_dir = os.path.join(self.config.paths.configs, "experiments")
+
+            # Build combined data: results + specs
+            all_results = self.results.get_all()
+            report_entries = []
+            for r in all_results:
+                entry = {
+                    "name": r.name,
+                    "algorithm": r.algorithm,
+                    "model": r.model,
+                    "metric_value": r.metric_value,
+                    "metric_std": r.metric_std,
+                    "seeds": r.seeds,
+                    "training_seconds": r.training_seconds,
+                    "peak_memory_mb": r.peak_memory_mb,
+                    "status": r.status,
+                    "description": r.description,
+                    "extra_metrics": r.extra_metrics,
+                    "commit": r.commit,
+                }
+                # Load corresponding spec if it exists
+                spec_path = os.path.join(experiments_dir, f"{r.name}.yaml")
+                if os.path.exists(spec_path):
+                    spec = ExperimentSpec.from_yaml(spec_path)
+                    entry["spec"] = {
+                        "source_paper": spec.source_paper,
+                        "architecture": spec.architecture,
+                        "training_config": spec.training_config,
+                        "task_config": spec.task_config,
+                        "why_it_might_work": spec.why_it_might_work,
+                        "resource_estimate": spec.resource_estimate,
+                        "category": spec.category,
+                        "tags": spec.tags,
+                        "tunable_hyperparameters": spec.tunable_hyperparameters,
+                    }
+                report_entries.append(entry)
+
+            # Sort by metric (best first)
+            direction = self.task.metric[1]
+            scored = [e for e in report_entries if e["metric_value"] is not None]
+            unscored = [e for e in report_entries if e["metric_value"] is None]
+            scored.sort(key=lambda e: e["metric_value"],
+                        reverse=(direction == "higher"))
+            sorted_entries = scored + unscored
+
+            report_data = {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "task": self.task.name,
+                "metric": {"name": self.task.metric[0], "direction": direction},
+                "total_experiments": len(all_results),
+                "total_cost_usd": self.cost_tracker.get_total_cost(),
+                "best": scored[0] if scored else None,
+                "experiments": sorted_entries,
+            }
+
+            # Write JSON
+            with open(f"{base_path}.json", "w") as f:
+                json.dump(report_data, f, indent=2, default=str)
+
+            # Write Markdown
+            md_lines = [
+                f"# Applied Scientist Report",
+                f"",
+                f"**Generated:** {report_data['generated_at']}  ",
+                f"**Task:** {self.task.name}  ",
+                f"**Metric:** {self.task.metric[0]} ({direction})  ",
+                f"**Experiments:** {len(all_results)}  ",
+                f"**Total LLM cost:** ${report_data['total_cost_usd']:.2f}",
+                f"",
+            ]
+            if scored:
+                best = scored[0]
+                md_lines += [
+                    f"## Best Result",
+                    f"",
+                    f"**{best['name']}** — {best['metric_value']:.4f}",
+                    f"",
+                ]
+
+            md_lines += [f"## All Experiments", f""]
+            for e in sorted_entries:
+                val = f"{e['metric_value']:.4f}" if e['metric_value'] is not None else "N/A"
+                md_lines += [
+                    f"### {e['name']}",
+                    f"",
+                    f"- **Metric:** {val} (std: {e['metric_std']})",
+                    f"- **Status:** {e['status']}",
+                    f"- **Algorithm:** {e['algorithm']}",
+                    f"- **Model:** {e['model']}",
+                    f"- **Training time:** {e['training_seconds']:.0f}s",
+                    f"- **Peak memory:** {e['peak_memory_mb']:.0f} MB",
+                    f"- **Description:** {e['description']}",
+                ]
+                if "spec" in e:
+                    s = e["spec"]
+                    md_lines += [
+                        f"- **Source paper:** {s['source_paper']}",
+                        f"- **Why it might work:** {s['why_it_might_work']}",
+                        f"- **Category:** {s['category']}",
+                        f"- **Architecture:**",
+                        f"  ```yaml",
+                    ]
+                    for line in yaml.dump(s["architecture"], default_flow_style=False).strip().split("\n"):
+                        md_lines.append(f"  {line}")
+                    md_lines += [
+                        f"  ```",
+                        f"- **Training config:**",
+                        f"  ```yaml",
+                    ]
+                    for line in yaml.dump(s["training_config"], default_flow_style=False).strip().split("\n"):
+                        md_lines.append(f"  {line}")
+                    md_lines += [f"  ```"]
+                    if s["tunable_hyperparameters"]:
+                        md_lines += [
+                            f"- **Tunable hyperparameters:**",
+                            f"  ```yaml",
+                        ]
+                        for line in yaml.dump(s["tunable_hyperparameters"], default_flow_style=False).strip().split("\n"):
+                            md_lines.append(f"  {line}")
+                        md_lines += [f"  ```"]
+                md_lines.append("")
+
+            with open(f"{base_path}.md", "w") as f:
+                f.write("\n".join(md_lines))
+
+            return base_path
+        except Exception as e:
+            self.system_logger.log(event="report_generation_failed", error=str(e))
+            return None
 
     def _init_workspace(self):
         dirs = [
@@ -177,6 +367,7 @@ class AppliedScientistSystem:
             os.path.join(self.config.paths.configs, "drafts"),
             os.path.join(self.config.paths.configs, "experiments"),
             os.path.join(self.config.paths.workspace, ".state"),
+            os.path.join(self.config.paths.workspace, "experiments"),
         ]
         for d in dirs:
             os.makedirs(d, exist_ok=True)
@@ -241,6 +432,10 @@ class AppliedScientistSystem:
                 resource_estimate={"memory": "~4GB", "training_time": "Standard"},
                 category="baseline",
             )
+        spec_path = os.path.join(
+            self.config.paths.configs, "experiments", f"{spec.name}.yaml")
+        if not os.path.exists(spec_path):
+            spec.to_yaml(spec_path)
         self.queue.insert(spec, score=100.0)
 
     def _recover_state(self):
@@ -263,6 +458,39 @@ class AppliedScientistSystem:
                                   ".state", "pending_pairs.json")
         if os.path.exists(pairs_path):
             self.agents["builder"].pending_pairs = BuilderAgent.load_pairs(pairs_path)
+
+    def _recover_drafts(self):
+        """Re-inject unreviewed drafts from configs/drafts/ into the Critic's inbox.
+
+        On restart, message bus messages from previous runs are lost. This scans
+        for draft specs that haven't been approved (not in configs/experiments/)
+        and posts spec_review_request for each.
+        """
+        import glob as glob_mod
+        drafts_dir = os.path.join(self.config.paths.configs, "drafts")
+        experiments_dir = os.path.join(self.config.paths.configs, "experiments")
+        completed_names = set()
+        if os.path.isdir(experiments_dir):
+            for f in os.listdir(experiments_dir):
+                if f.endswith(".yaml"):
+                    completed_names.add(f)
+
+        count = 0
+        for draft_path in sorted(glob_mod.glob(os.path.join(drafts_dir, "*.yaml"))):
+            fname = os.path.basename(draft_path)
+            if fname in completed_names:
+                continue  # already approved
+            self.bus.post(AgentMessage(
+                sender="system", recipient="critic",
+                type="spec_review_request",
+                payload={"draft_path": draft_path, "round": 1},
+                priority=PRIORITY_SPEC_REVIEW,
+            ))
+            count += 1
+        if count > 0:
+            self.system_logger.log(
+                event="drafts_recovered", count=count,
+                message=f"Re-injected {count} unreviewed drafts for Critic review")
 
     def _watchdog(self):
         restart_counts = {name: 0 for name in ["explorer", "critic", "builder"]}
@@ -330,7 +558,7 @@ class AppliedScientistSystem:
         raise ValueError(f"No TaskAdapter subclass found in {module_path}/adapter.py")
 
     def _run_test(self):
-        print("Running test...")
+        self._system_output("Running test...")
         steps = [
             ("Config", lambda: True),
             ("Task adapter", self._test_task_adapter),
@@ -338,15 +566,20 @@ class AppliedScientistSystem:
             ("Compute", self._test_compute),
             ("Workspace", self._test_workspace),
         ]
+        results = []
+        all_ok = True
         for name, fn in steps:
             try:
                 fn()
-                print(f"  {name:20s} OK")
+                results.append(f"  {name:20s} OK")
             except Exception as e:
-                print(f"  {name:20s} FAILED -- {e}")
-                print(f"\nTest run failed at: {name}")
-                return
-        print(f"\nSystem is ready. Run without --test-run to start.")
+                results.append(f"  {name:20s} FAILED -- {e}")
+                results.append(f"\nTest run failed at: {name}")
+                all_ok = False
+                break
+        if all_ok:
+            results.append(f"\nSystem is ready. Run without --test-run to start.")
+        self._system_output("\n".join(results))
 
     def _test_task_adapter(self):
         assert self.task.name, "TaskAdapter.name is empty"

@@ -6,11 +6,13 @@ import queue
 import uuid
 import threading
 from dataclasses import dataclass, field
+from typing import Callable
 
 from applied_scientist.core.utils import atomic_write
 
 # Priority constants — higher = processed first
 PRIORITY_CODE_REVIEW = 100
+PRIORITY_PLAN_REVIEW = 90
 PRIORITY_SPEC_REVIEW = 80
 PRIORITY_INSIGHT_REVIEW = 60
 PRIORITY_SUGGESTION = 40
@@ -38,8 +40,16 @@ class MessageBus:
         self._state_path = state_path
         self._lock = threading.Lock()
         self._queues: dict[str, queue.PriorityQueue] = {}
+        self._observers: list[Callable[[AgentMessage], None]] = []
         if state_path and os.path.exists(state_path):
             self._load_state(state_path)
+
+    def add_observer(self, callback: Callable[[AgentMessage], None]) -> None:
+        """Register a callback invoked on every post().
+        Callback receives an AgentMessage. Must be fast/non-blocking.
+        Called OUTSIDE the bus lock — safe to call bus.post() from callback."""
+        with self._lock:
+            self._observers.append(callback)
 
     def post(self, message: AgentMessage) -> None:
         """Post message to recipient's queue. Thread-safe. Non-blocking."""
@@ -50,6 +60,14 @@ class MessageBus:
             self._queues[message.recipient].put((-message.priority, message.id, message))
             if self._state_path:
                 self._persist()
+            observers = list(self._observers)  # snapshot under lock
+
+        # Invoke observers OUTSIDE the lock to prevent deadlock
+        for obs in observers:
+            try:
+                obs(message)
+            except Exception:
+                pass  # Never let observer errors break message delivery
 
     def poll(self, agent: str, timeout: float = 0.1) -> AgentMessage | None:
         """Non-blocking poll. Returns highest-priority message for agent,

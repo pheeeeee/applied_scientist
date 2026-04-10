@@ -115,10 +115,12 @@ class ResultsTracker:
         """Write results.tsv atomically."""
         lines = ["\t".join(self.HEADER)]
         for r in self._results:
+            # Sanitize description — replace newlines/tabs to prevent TSV corruption
+            safe_desc = r.description.replace("\n", " ").replace("\t", " ").replace("\r", "")
             row = [r.name, r.commit, r.algorithm, r.model,
                    str(r.metric_value) if r.metric_value is not None else "",
                    str(r.metric_std) if r.metric_std is not None else "",
                    str(r.seeds), str(r.training_seconds), str(r.peak_memory_mb),
-                   r.status, r.description, json.dumps(r.extra_metrics)]
+                   r.status, safe_desc, json.dumps(r.extra_metrics)]
             lines.append("\t".join(row))
         atomic_write(self._path, "\n".join(lines) + "\n")

@@ -75,3 +75,28 @@ class SubmitSuggestionTriage(Tool):
 
     def execute(self, **kwargs) -> str:
         return json.dumps(kwargs)
+
+
+class SubmitPlanReview(Tool):
+    """Structured plan review tool for Critic to approve/reject implementation plans."""
+    name = "submit_plan_review"
+    description = "Submit your review decision for a Builder implementation plan (PLAN.md)."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "verdict": {"type": "string", "enum": ["approved", "rejected"]},
+            "feedback": {"type": "string",
+                         "description": "Specific feedback: what to fix (if rejected) "
+                                        "or confirmation of plan adequacy (if approved)"},
+            "missing_files": {
+                "type": "array", "items": {"type": "string"},
+                "description": "Files the plan should include but doesn't"},
+            "concerns": {
+                "type": "array", "items": {"type": "string"},
+                "description": "Specific technical concerns (wrong API, env compat, etc.)"},
+        },
+        "required": ["verdict", "feedback"],
+    }
+
+    def execute(self, **kwargs) -> str:
+        return json.dumps(kwargs)

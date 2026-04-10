@@ -12,16 +12,32 @@ class SLURMRunner(JobRunner):
 
     def __init__(self, partition: str = "gpu", gres: str = "gpu:1",
                  mem: str = "48G", time: str = "01:00:00",
+                 account: str | None = None,
                  setup_commands: list[str] | None = None):
         self.partition = partition
         self.gres = gres
         self.mem = mem
         self.time = time
+        self.account = account
         self.setup_commands = setup_commands or []
 
     def submit(self, command: str, job_name: str,
-               resources: dict | None = None) -> str:
-        """Submit via sbatch --parsable. Returns job ID string."""
+               resources: dict | None = None,
+               scripts_dir: str | None = None) -> str:
+        """Submit via sbatch --parsable. Returns job ID string.
+
+        Args:
+            scripts_dir: If provided, save the sbatch script there after
+                         successful submission (named <job_name>_<job_id>.sh).
+                         Also used as the directory for SLURM output files.
+        """
+        # Use scripts_dir for SLURM output, or current dir as fallback
+        if scripts_dir:
+            os.makedirs(scripts_dir, exist_ok=True)
+            output_path = os.path.join(os.path.abspath(scripts_dir), "slurm-%j.out")
+        else:
+            output_path = "slurm-%j.out"
+
         # Write temporary batch script
         script_lines = [
             "#!/bin/bash",
@@ -30,15 +46,19 @@ class SLURMRunner(JobRunner):
             f"#SBATCH --gres={self.gres}",
             f"#SBATCH --mem={self.mem}",
             f"#SBATCH --time={self.time}",
-            f"#SBATCH --output=slurm-%j.out",
+            f"#SBATCH --output={output_path}",
         ]
+        if self.account:
+            script_lines.append(f"#SBATCH --account={self.account}")
         for cmd in self.setup_commands:
             script_lines.append(cmd)
         script_lines.append(command)
 
+        script_content = "\n".join(script_lines) + "\n"
+
         fd, script_path = tempfile.mkstemp(suffix=".sh")
         with os.fdopen(fd, "w") as f:
-            f.write("\n".join(script_lines) + "\n")
+            f.write(script_content)
 
         result = subprocess.run(
             ["sbatch", "--parsable", script_path],
@@ -47,7 +67,17 @@ class SLURMRunner(JobRunner):
 
         if result.returncode != 0:
             raise RuntimeError(f"sbatch failed: {result.stderr}")
-        return result.stdout.strip()
+
+        job_id = result.stdout.strip()
+
+        # Save script for reproducibility
+        if scripts_dir:
+            os.makedirs(scripts_dir, exist_ok=True)
+            saved_path = os.path.join(scripts_dir, f"{job_name}_{job_id}.sh")
+            with open(saved_path, "w") as f:
+                f.write(script_content)
+
+        return job_id
 
     def status(self, job_id: str) -> JobStatus:
         """Check via sacct."""
@@ -86,15 +116,19 @@ class SLURMRunner(JobRunner):
         subprocess.run(["scancel", job_id], capture_output=True)
 
     def get_log(self, job_id: str, tail: int = 50) -> str:
-        """Read SLURM output file."""
+        """Read SLURM output file. Searches common locations."""
         import glob
-        pattern = f"slurm-{job_id}.out"
-        matches = glob.glob(pattern)
-        if not matches:
-            return f"No log file found for job {job_id}"
-        with open(matches[0]) as f:
-            lines = f.readlines()
-        return "".join(lines[-tail:])
+        search_patterns = [
+            f"slurm-{job_id}.out",
+            f"**/slurm-{job_id}.out",
+        ]
+        for pattern in search_patterns:
+            matches = glob.glob(pattern, recursive=True)
+            if matches:
+                with open(matches[0]) as f:
+                    lines = f.readlines()
+                return "".join(lines[-tail:])
+        return f"No log file found for job {job_id}"
 
     def _parse_elapsed(self, elapsed_str: str) -> float | None:
         """Parse SLURM elapsed time format (HH:MM:SS or D-HH:MM:SS) to seconds."""

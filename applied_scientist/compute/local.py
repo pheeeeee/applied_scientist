@@ -15,7 +15,8 @@ class LocalRunner(JobRunner):
         self._processes: dict[str, dict] = {}  # job_id -> {process, log_path, start_time}
 
     def submit(self, command: str, job_name: str,
-               resources: dict | None = None) -> str:
+               resources: dict | None = None,
+               scripts_dir: str | None = None) -> str:
         job_id = str(uuid.uuid4())[:8]
         log_path = f"{job_name}_{job_id}.log"
 

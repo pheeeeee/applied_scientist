@@ -7,8 +7,8 @@ import time
 
 from applied_scientist.agents.base import BaseAgent
 from applied_scientist.core.message_bus import (
-    AgentMessage, PRIORITY_CODE_REVIEW, PRIORITY_INSIGHT_REVIEW,
-    PRIORITY_SUGGESTION, PRIORITY_RERANK,
+    AgentMessage, PRIORITY_CODE_REVIEW, PRIORITY_PLAN_REVIEW,
+    PRIORITY_INSIGHT_REVIEW, PRIORITY_SUGGESTION, PRIORITY_RERANK,
 )
 from applied_scientist.core.spec import ExperimentSpec
 from applied_scientist.core.results_tracker import ExperimentResult
@@ -68,6 +68,8 @@ class BuilderAgent(BaseAgent):
                 self._handle_code_rejection(msg)
             elif msg.type == "code_approved":
                 pass  # job already submitted optimistically
+            elif msg.type in ("plan_approved", "plan_rejected"):
+                self.bus.post(msg)  # re-inject for _wait_for_message to consume
             elif msg.type == "insight_approved":
                 self.kb.add_insight(msg.payload["experiment"], msg.payload["insight"])
             elif msg.type == "insight_rejected":
@@ -168,45 +170,114 @@ class BuilderAgent(BaseAgent):
                 self.pool.release(slot.slot_id)
 
     def _implement_and_submit(self, spec: ExperimentSpec, slot: GPUSlot):
-        """Implement, validate, commit, submit. Non-blocking code review."""
+        """Plan -> Critic review -> Implement -> Validate -> Submit.
+
+        Non-baseline experiments get self-contained directories under
+        workspace/experiments/<name>/. Baseline experiments use the adapter's train.py.
+        """
         self._track_pair(spec)
         self._edited_files.clear()
 
         is_baseline = spec.category == "baseline"
         seeds = self.config.system.baseline_seeds if is_baseline else 1
 
-        if is_baseline and seeds > 1:
-            self._run_baseline_seeds(spec, slot, seeds)
+        # ── Baseline: unchanged flow (uses adapter's train.py) ──
+        if is_baseline:
+            if seeds > 1:
+                self._run_baseline_seeds(spec, slot, seeds)
+            else:
+                log_dir = os.path.join(self.config.paths.logs, spec.name)
+                os.makedirs(log_dir, exist_ok=True)
+                command = self._build_train_command(spec, seed=1)
+                scripts_dir = os.path.join(self.config.paths.workspace, "scripts")
+                job_id = self.runner.submit(command, spec.name, scripts_dir=scripts_dir)
+                self.pool.assign(slot.slot_id, job_id, spec.name, log_dir)
+                self.system_logger.log(event="experiment_submitted",
+                                       spec=spec.name, job_id=job_id)
+            self.reset_conversation()
             return
 
+        # ── Non-baseline: self-contained experiment directory flow ──
+
+        # Step 1: Create experiment directory and copy spec
+        experiment_dir = self._make_experiment_dir(spec)
+        spec.to_yaml(os.path.join(experiment_dir, "spec.yaml"))
+
+        # Step 2: Write implementation plan (LLM chat)
+        plan_text = self._write_implementation_plan(spec, experiment_dir)
+
+        # Step 3: Critic reviews plan (BLOCKING)
+        approved = self._wait_for_plan_review(spec, plan_text, experiment_dir)
+        if not approved:
+            self._alert("error", f"Plan for {spec.name} rejected after max rounds")
+            self.pool.release(slot.slot_id)
+            self.reset_conversation()
+            return
+
+        # Step 4a: Read reference code (baseline train.py) before implementing
         spec_content = spec.to_yaml()
         code_map = self.task.code_map if self.task.code_map else ""
+        rel_dir = os.path.relpath(experiment_dir, self.config.paths.workspace)
+        task_module = self.config.task.get("module", "")
+
+        self.chat(f"Read the approved plan: read_file {rel_dir}/PLAN.md")
+        if task_module:
+            self.chat(
+                f"Read the working baseline training script as reference. "
+                f"Study how it handles CLI args, progress.json, Ray init, and "
+                f"final JSON output — your train.py must follow the same contract.\n\n"
+                f"read_file {task_module}/train.py"
+            )
+
+        # Step 4b: Implement all files
         self.chat(
-            f"## Implement this experiment\n\n"
+            f"## Implement the experiment from the approved plan\n\n"
             f"```yaml\n{spec_content}\n```\n\n"
             f"## Task context\n{self.task.domain_context}\n\n"
-            f"## Code map\n{code_map}\n\n"
-            f"Read the current code, implement the architecture from this spec. "
-            f"Only modify training code — do not change evaluation or data loading. "
-            f"Use edit_file and write_file tools."
+            f"## Reference code map\n{code_map}\n\n"
+            f"Implement ALL files listed in the PLAN.md into the directory:\n"
+            f"  {rel_dir}/\n\n"
+            f"Requirements:\n"
+            f"- train.py MUST accept: --seed, --time-budget, --log-path, --checkpoint-dir\n"
+            f"- train.py MUST write progress.json to --log-path periodically\n"
+            f"- train.py MUST print final result as JSON on the last line\n"
+            f"- All imports must be self-contained (no imports from tasks/examples/ models)\n"
+            f"- Environment: Python 3.8, Ray 1.4.0, PyTorch 1.8.1\n\n"
+            f"Implement ONE FILE AT A TIME. For each file:\n"
+            f"1. Write the complete file using write_file\n"
+            f"2. Review what you wrote — check imports, signatures, and connections\n"
+            f"3. Move to the next file\n\n"
+            f"After writing ALL files, read back train.py and verify it matches the plan."
         )
 
+        # Track edited files
         for msg in self.conversation:
             if msg.tool_calls:
                 for call in msg.tool_calls:
                     if call["name"] in ("edit_file", "write_file"):
-                        path = call["arguments"].get("path", call["arguments"].get("file_path", ""))
+                        path = call["arguments"].get("path",
+                               call["arguments"].get("file_path", ""))
                         if path:
                             self._edited_files.add(path)
 
-        if not self._validate_implementation(spec):
+        # Step 5: Validate with iterative fixing (up to 3 attempts)
+        max_fix_attempts = 3
+        for attempt in range(max_fix_attempts):
+            if self._validate_experiment_dir(spec, experiment_dir):
+                break
             error = self._last_validation_error
-            self.chat(f"Pre-flight validation failed:\n{error}\nFix the issue.")
-            if not self._validate_implementation(spec):
+            if attempt == max_fix_attempts - 1:
                 self._record_validation_fail(spec, slot)
                 self.reset_conversation()
                 return
+            self.chat(
+                f"Pre-flight validation failed (attempt {attempt + 1}/{max_fix_attempts}):\n"
+                f"{error}\n\n"
+                f"Read the failing file, diagnose the root cause, and fix it. "
+                f"Do not guess — read the actual code first."
+            )
 
+        # Step 6: Code review (non-blocking)
         diff = self._get_git_diff()
         if self._is_structural_change(diff):
             self.bus.post(AgentMessage(
@@ -216,16 +287,199 @@ class BuilderAgent(BaseAgent):
                 priority=PRIORITY_CODE_REVIEW,
             ))
 
+        # Step 7: Git commit
         self.chat("Commit the changes with git_commit tool.")
 
+        # Step 8: Submit to SLURM
         log_dir = os.path.join(self.config.paths.logs, spec.name)
         os.makedirs(log_dir, exist_ok=True)
-        command = self._build_train_command(spec, seed=1)
-        job_id = self.runner.submit(command, spec.name)
+        command = self._build_train_command_experiment_dir(spec, experiment_dir, seed=1)
+        job_id = self.runner.submit(command, spec.name, scripts_dir=experiment_dir)
         self.pool.assign(slot.slot_id, job_id, spec.name, log_dir)
 
-        self.system_logger.log(event="experiment_submitted", spec=spec.name, job_id=job_id)
+        self.system_logger.log(event="experiment_submitted", spec=spec.name,
+                               job_id=job_id, experiment_dir=experiment_dir)
         self.reset_conversation()
+
+    # ── New methods for self-contained experiment directories ──
+
+    def _make_experiment_dir(self, spec: ExperimentSpec) -> str:
+        """Create and return path to workspace/experiments/<spec.name>/."""
+        exp_dir = os.path.join(self.config.paths.workspace, "experiments", spec.name)
+        os.makedirs(exp_dir, exist_ok=True)
+        return exp_dir
+
+    def _write_implementation_plan(self, spec: ExperimentSpec,
+                                    experiment_dir: str) -> str:
+        """Chat with LLM to create PLAN.md. Returns the plan text."""
+        spec_content = spec.to_yaml()
+        code_map = self.task.code_map if self.task.code_map else ""
+        rel_dir = os.path.relpath(experiment_dir, self.config.paths.workspace)
+
+        plan_text = self.chat(
+            f"## Write an implementation plan for this experiment\n\n"
+            f"```yaml\n{spec_content}\n```\n\n"
+            f"## Task context\n{self.task.domain_context}\n\n"
+            f"## Reference code map (existing task structure)\n{code_map}\n\n"
+            f"## Instructions\n"
+            f"You will implement this as a SELF-CONTAINED experiment directory at:\n"
+            f"  {rel_dir}/\n\n"
+            f"Write a PLAN.md that lists:\n"
+            f"1. **Every file** you will create and its purpose\n"
+            f"2. **Key classes and functions** in each file with signatures\n"
+            f"3. **How the files connect** (imports, call chains)\n"
+            f"4. **train.py contract**: Must accept CLI args --seed, --time-budget, "
+            f"--log-path, --checkpoint-dir. Must write progress.json periodically. "
+            f"Must print final result as JSON on last line.\n"
+            f"5. **Dependencies**: What packages/modules are imported\n"
+            f"6. **Environment constraints**: Python 3.8, Ray 1.4.0, PyTorch 1.8.1\n\n"
+            f"The experiment directory must be completely self-contained. "
+            f"Do NOT import from tasks/examples/ model files. "
+            f"You MAY import standard libraries, ray, torch, gym, and soccer_twos.\n\n"
+            f"Output ONLY the PLAN.md content. Do not use any tools yet."
+        )
+
+        # Write PLAN.md to the experiment directory
+        self.chat(
+            f"Write the plan to {rel_dir}/PLAN.md using write_file tool:\n\n{plan_text}"
+        )
+
+        return plan_text
+
+    def _wait_for_plan_review(self, spec: ExperimentSpec, plan_text: str,
+                               experiment_dir: str) -> bool:
+        """Submit plan for Critic review, block until response.
+        Returns True if approved, False if rejected after max rounds.
+        """
+        max_rounds = self.config.system.max_spec_review_rounds
+        spec_content = spec.to_yaml()
+        current_plan = plan_text
+        rel_dir = os.path.relpath(experiment_dir, self.config.paths.workspace)
+
+        for round_num in range(1, max_rounds + 1):
+            self.bus.post(AgentMessage(
+                sender="builder", recipient="critic",
+                type="plan_review_request",
+                payload={
+                    "spec_name": spec.name,
+                    "plan_content": current_plan,
+                    "spec_content": spec_content,
+                    "round": round_num,
+                },
+                priority=PRIORITY_PLAN_REVIEW,
+            ))
+
+            # Block until Critic responds (approval or rejection)
+            response = self._wait_for_message(
+                ("plan_approved", "plan_rejected"),
+                match_fn=lambda m: m.payload.get("spec_name") == spec.name,
+                timeout=300.0,
+            )
+
+            if response is None:
+                self.system_logger.log(
+                    event="plan_review_timeout", spec=spec.name, round=round_num)
+                if round_num == max_rounds:
+                    return True  # force-approve on final timeout
+                continue
+
+            if response.type == "plan_approved":
+                self.system_logger.log(
+                    event="plan_approved", spec=spec.name, round=round_num)
+                return True
+
+            # Handle rejection — revise the plan
+            feedback = response.payload.get("feedback", "")
+            missing = response.payload.get("missing_files", [])
+            concerns = response.payload.get("concerns", [])
+            self.system_logger.log(
+                event="plan_rejected", spec=spec.name, round=round_num,
+                feedback=feedback[:200])
+
+            revision_prompt = (
+                f"## Revise the implementation plan (round {round_num + 1}/{max_rounds})\n\n"
+                f"The Critic rejected the plan with this feedback:\n{feedback}\n\n"
+            )
+            if missing:
+                revision_prompt += f"Missing files: {', '.join(missing)}\n\n"
+            if concerns:
+                revision_prompt += "Concerns:\n" + "\n".join(
+                    f"- {c}" for c in concerns) + "\n\n"
+            revision_prompt += (
+                "Revise the plan to address ALL feedback. "
+                "Output the complete revised PLAN.md content."
+            )
+
+            current_plan = self.chat(revision_prompt)
+            self.chat(
+                f"Update the plan file at {rel_dir}/PLAN.md "
+                f"using write_file tool:\n\n{current_plan}"
+            )
+
+        self.system_logger.log(
+            event="plan_force_approved", spec=spec.name,
+            reason="max_review_rounds_exhausted")
+        return True
+
+    def _validate_experiment_dir(self, spec: ExperimentSpec,
+                                  experiment_dir: str) -> bool:
+        """Pre-flight validation for self-contained experiment directory."""
+        train_path = os.path.join(experiment_dir, "train.py")
+        if not os.path.exists(train_path):
+            self._last_validation_error = f"train.py not found in {experiment_dir}/"
+            return False
+
+        # Syntax check all .py files
+        self.chat(
+            f"Run a syntax check using run_command: "
+            f"python -c \"import py_compile; import glob; "
+            f"[py_compile.compile(f, doraise=True) for f in "
+            f"glob.glob('{experiment_dir}/*.py')]\""
+        )
+        cmd_result = self._parse_last_tool_result("run_command")
+        if cmd_result is None:
+            self._last_validation_error = "Syntax check was not executed (tool not called)"
+            return False
+        if "Error" in cmd_result or "Traceback" in cmd_result:
+            self._last_validation_error = cmd_result
+            return False
+
+        # 10-second smoke test (runs on head node, keep short)
+        smoke_cmd = self._build_train_command_experiment_dir(
+            spec, experiment_dir, seed=0, time_budget=10)
+        self.chat(f"Run a quick smoke test using run_command:\n{smoke_cmd}")
+        cmd_result = self._parse_last_tool_result("run_command")
+        if cmd_result is None:
+            self._last_validation_error = "Smoke test was not executed (tool not called)"
+            return False
+        if "Error" in cmd_result or "Traceback" in cmd_result or "crash" in cmd_result.lower():
+            self._last_validation_error = cmd_result
+            return False
+
+        return True
+
+    def _build_train_command_experiment_dir(self, spec: ExperimentSpec,
+                                             experiment_dir: str,
+                                             seed: int,
+                                             time_budget: int | None = None) -> str:
+        """Build training command for self-contained experiment directory."""
+        tb = time_budget or self.config.system.time_budget
+        log_dir = os.path.join(
+            self.config.paths.logs,
+            spec.name if seed == 0 else f"{spec.name}_s{seed}",
+        )
+        ckpt_dir = os.path.join(
+            self.config.paths.checkpoints,
+            spec.name if seed == 0 else f"{spec.name}_s{seed}",
+        )
+        train_script = os.path.join(experiment_dir, "train.py")
+        return (
+            f"python {train_script} "
+            f"--seed {seed} "
+            f"--time-budget {tb} "
+            f"--log-path {log_dir} "
+            f"--checkpoint-dir {ckpt_dir}"
+        )
 
     def _validate_implementation(self, spec: ExperimentSpec) -> bool:
         """Pre-flight: syntax check + 60s smoke test.
@@ -267,7 +521,8 @@ class BuilderAgent(BaseAgent):
             log_dir = os.path.join(self.config.paths.logs, job_name)
             os.makedirs(log_dir, exist_ok=True)
             command = self._build_train_command(spec, seed=seed)
-            job_id = self.runner.submit(command, job_name)
+            scripts_dir = os.path.join(self.config.paths.workspace, "scripts")
+            job_id = self.runner.submit(command, job_name, scripts_dir=scripts_dir)
             self.pool.assign(slot.slot_id, job_id, job_name, log_dir)
             self._wait_for_slot_completion(slot)
             status = self.runner.status(slot.job_id)
@@ -408,15 +663,31 @@ class BuilderAgent(BaseAgent):
                 self.pool.release(slot.slot_id)
                 self.chat(f"Fix this code based on review:\n{feedback}")
                 self.chat("Commit the fix with git_commit tool.")
-                spec = ExperimentSpec.from_yaml(
-                    os.path.join(self.config.paths.configs, "experiments", f"{spec_name}.yaml"))
+                experiment_dir = os.path.join(
+                    self.config.paths.workspace, "experiments", spec_name)
+                spec_path = os.path.join(experiment_dir, "spec.yaml")
+                if not os.path.exists(spec_path):
+                    spec_path = os.path.join(
+                        self.config.paths.configs, "experiments", f"{spec_name}.yaml")
+                spec = ExperimentSpec.from_yaml(spec_path)
                 new_slot = self.pool.get_free_slot()
                 if new_slot:
-                    if self._validate_implementation(spec):
-                        command = self._build_train_command(spec, seed=1)
-                        log_dir = os.path.join(self.config.paths.logs, spec_name)
-                        job_id = self.runner.submit(command, spec_name)
-                        self.pool.assign(new_slot.slot_id, job_id, spec_name, log_dir)
+                    if os.path.isdir(experiment_dir):
+                        if self._validate_experiment_dir(spec, experiment_dir):
+                            command = self._build_train_command_experiment_dir(
+                                spec, experiment_dir, seed=1)
+                            log_dir = os.path.join(self.config.paths.logs, spec_name)
+                            job_id = self.runner.submit(
+                                command, spec_name, scripts_dir=experiment_dir)
+                            self.pool.assign(new_slot.slot_id, job_id, spec_name, log_dir)
+                    else:
+                        if self._validate_implementation(spec):
+                            command = self._build_train_command(spec, seed=1)
+                            log_dir = os.path.join(self.config.paths.logs, spec_name)
+                            scripts_dir = os.path.join(self.config.paths.workspace, "scripts")
+                            job_id = self.runner.submit(
+                                command, spec_name, scripts_dir=scripts_dir)
+                            self.pool.assign(new_slot.slot_id, job_id, spec_name, log_dir)
                 break
         self.reset_conversation()
 
@@ -487,7 +758,7 @@ class BuilderAgent(BaseAgent):
             model=self.llm.get_model_id(),
             metric_value=metrics.get(metric_name),
             metric_std=None, seeds=1,
-            training_seconds=metrics.get("training_seconds", 0),
+            training_seconds=metrics.get("training_seconds", metrics.get("elapsed_seconds", 0)),
             peak_memory_mb=metrics.get("peak_memory_mb", 0),
             status="keep" if metrics.get(metric_name) is not None else "crash",
             description=metrics.get("description", ""),
@@ -581,19 +852,41 @@ class BuilderAgent(BaseAgent):
                     f"Training crashed with this error:\n{log[-2000:]}\n\n"
                     f"Attempt to fix the issue."
                 )
-                spec = ExperimentSpec.from_yaml(
-                    os.path.join(self.config.paths.configs, "experiments", f"{name}.yaml"))
-                if self._validate_implementation(spec):
-                    self.chat("Commit the fix with git_commit tool.")
-                    new_slot = self.pool.get_free_slot()
-                    if new_slot:
-                        command = self._build_train_command(spec, seed=1)
-                        log_dir = os.path.join(self.config.paths.logs, name)
-                        job_id = self.runner.submit(command, f"{name}_fix")
-                        self.pool.assign(new_slot.slot_id, job_id, name, log_dir)
-                        self.system_logger.log(event="experiment_retry", spec=name)
-                        self.reset_conversation()
-                        return
+                experiment_dir = os.path.join(
+                    self.config.paths.workspace, "experiments", name)
+                spec_path = os.path.join(experiment_dir, "spec.yaml")
+                if not os.path.exists(spec_path):
+                    spec_path = os.path.join(
+                        self.config.paths.configs, "experiments", f"{name}.yaml")
+                spec = ExperimentSpec.from_yaml(spec_path)
+                if os.path.isdir(experiment_dir):
+                    if self._validate_experiment_dir(spec, experiment_dir):
+                        self.chat("Commit the fix with git_commit tool.")
+                        new_slot = self.pool.get_free_slot()
+                        if new_slot:
+                            command = self._build_train_command_experiment_dir(
+                                spec, experiment_dir, seed=1)
+                            log_dir = os.path.join(self.config.paths.logs, name)
+                            job_id = self.runner.submit(
+                                command, f"{name}_fix", scripts_dir=experiment_dir)
+                            self.pool.assign(new_slot.slot_id, job_id, name, log_dir)
+                            self.system_logger.log(event="experiment_retry", spec=name)
+                            self.reset_conversation()
+                            return
+                else:
+                    if self._validate_implementation(spec):
+                        self.chat("Commit the fix with git_commit tool.")
+                        new_slot = self.pool.get_free_slot()
+                        if new_slot:
+                            command = self._build_train_command(spec, seed=1)
+                            log_dir = os.path.join(self.config.paths.logs, name)
+                            scripts_dir = os.path.join(self.config.paths.workspace, "scripts")
+                            job_id = self.runner.submit(
+                                command, f"{name}_fix", scripts_dir=scripts_dir)
+                            self.pool.assign(new_slot.slot_id, job_id, name, log_dir)
+                            self.system_logger.log(event="experiment_retry", spec=name)
+                            self.reset_conversation()
+                            return
             except Exception:
                 pass
 

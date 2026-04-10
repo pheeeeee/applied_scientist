@@ -51,6 +51,11 @@ class PathsConfig:
 
 
 @dataclass
+class InterfaceConfig:
+    backend: str = "terminal"  # "terminal", "slack", "telegram"
+
+
+@dataclass
 class Config:
     system: SystemConfig
     tuning: TuningConfig
@@ -58,6 +63,7 @@ class Config:
     compute: ComputeConfig
     task: dict
     paths: PathsConfig
+    interface: InterfaceConfig = field(default_factory=InterfaceConfig)
 
     @classmethod
     def from_yaml(cls, path: str) -> Config:
@@ -72,11 +78,20 @@ class Config:
         raw = re.sub(r'\$\{(\w+)\}', resolve_env, raw)
         data = yaml.safe_load(raw)
 
+        # Resolve relative paths against the config file's directory
+        config_dir = os.path.dirname(os.path.abspath(path))
+        project_root = os.path.dirname(config_dir)  # configs/ -> project root
+        paths_data = data.get("paths", {})
+        for key, val in paths_data.items():
+            if isinstance(val, str) and not os.path.isabs(val):
+                paths_data[key] = os.path.normpath(os.path.join(project_root, val))
+
         return cls(
             system=SystemConfig(**data.get("system", {})),
             tuning=TuningConfig(**data.get("tuning", {})),
             llm={k: LLMAgentConfig(**v) for k, v in data.get("llm", {}).items()},
             compute=ComputeConfig(**data.get("compute", {})),
             task=data.get("task", {}),
-            paths=PathsConfig(**data.get("paths", {})),
+            paths=PathsConfig(**paths_data),
+            interface=InterfaceConfig(**data.get("interface", {})),
         )
