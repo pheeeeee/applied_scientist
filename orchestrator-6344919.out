@@ -1,0 +1,36 @@
+---------------------------------------
+Begin Slurm Prolog: Apr-08-2026 23:33:41
+Job ID:    6344919
+User ID:   jphee3
+Account:   gts-jli3175
+Job name:  applied-scientist
+Partition: cpu-small
+QOS:       inferno
+---------------------------------------
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/storage/project/r-jli3175-0/jphee3/autoresearch/applied-scientist/applied_scientist/__main__.py", line 34, in <module>
+    main()
+  File "/storage/project/r-jli3175-0/jphee3/autoresearch/applied-scientist/applied_scientist/__main__.py", line 22, in main
+    system = AppliedScientistSystem(
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/storage/project/r-jli3175-0/jphee3/autoresearch/applied-scientist/applied_scientist/system.py", line 71, in __init__
+    self.results = ResultsTracker(
+                   ^^^^^^^^^^^^^^^
+  File "/storage/project/r-jli3175-0/jphee3/autoresearch/applied-scientist/applied_scientist/core/results_tracker.py", line 51, in __init__
+    seeds=int(row["seeds"]),
+          ^^^^^^^^^^^^^^^^^
+TypeError: int() argument must be a string, a bytes-like object or a real number, not 'NoneType'
+---------------------------------------
+Begin Slurm Epilog: Apr-08-2026 23:33:42
+Job ID:        6344919
+User ID:       jphee3
+Account:       gts-jli3175
+Job name:      applied-scientist
+Resources:     cpu=1,mem=8G,node=1
+Rsrc Used:     cput=00:00:03,vmem=0,walltime=00:00:03,mem=27756K,energy_used=0
+Partition:     cpu-small
+QOS:           inferno
+Nodes:         atl1-1-02-003-16-1
+---------------------------------------

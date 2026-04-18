@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import sys
+import traceback
 
 
 def load_task_adapter(module_path: str):
@@ -54,7 +55,19 @@ def main():
             checkpoint_dir=args.checkpoint_dir,
         )
     except Exception as e:
-        result = {"status": "crash", "error": str(e)}
+        tb = traceback.format_exc()
+        sys.stderr.write(tb)
+        sys.stderr.flush()
+        result = {
+            "status": "crash",
+            "error": f"{type(e).__name__}: {e}",
+            "traceback": tb,
+        }
+
+    # Persist results to file so they survive even if the builder agent is not alive
+    results_file = os.path.join(args.log_path, "results.json")
+    with open(results_file, "w") as f:
+        json.dump(result, f, indent=2)
 
     print(json.dumps(result))
 

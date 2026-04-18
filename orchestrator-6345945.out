@@ -1,0 +1,25 @@
+---------------------------------------
+Begin Slurm Prolog: Apr-09-2026 00:10:16
+Job ID:    6345945
+User ID:   jphee3
+Account:   gts-jli3175
+Job name:  applied-scientist
+Partition: cpu-small
+QOS:       inferno
+---------------------------------------
+Unauthorized Slack user: U0ARMQ8RZ1T
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-04-09T11:35:37.419] error: *** STEP 6345945.0 ON atl1-1-02-003-16-2 CANCELLED AT 2026-04-09T11:35:37 DUE to SIGNAL Terminated ***
+[2026-04-09T11:35:37.420] error: *** JOB 6345945 ON atl1-1-02-003-16-2 CANCELLED AT 2026-04-09T11:35:37 DUE to SIGNAL Terminated ***
+---------------------------------------
+Begin Slurm Epilog: Apr-09-2026 11:35:46
+Job ID:        6345945
+User ID:       jphee3
+Account:       gts-jli3175
+Job name:      applied-scientist
+Resources:     cpu=1,mem=8G,node=1
+Rsrc Used:     cput=11:25:23,vmem=0,walltime=11:25:23,mem=15724K,energy_used=0
+Partition:     cpu-small
+QOS:           inferno
+Nodes:         atl1-1-02-003-16-2
+---------------------------------------

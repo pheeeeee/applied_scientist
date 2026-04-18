@@ -23,7 +23,7 @@ class BuilderAgent(BaseAgent):
     def __init__(self, llm, tools, system_prompt, message_bus, cost_tracker,
                  priority_queue, knowledge_base, results_tracker,
                  gpu_pool, job_runner, task_adapter, system_logger: EventLogger,
-                 config):
+                 config, approve_plans: bool = False, approve_submit: bool = False):
         super().__init__("builder", llm, tools, system_prompt, message_bus, cost_tracker)
         self.queue = priority_queue
         self.kb = knowledge_base
@@ -39,6 +39,9 @@ class BuilderAgent(BaseAgent):
         self._consecutive_failures: int = 0
         self._last_failure_error: str = ""
         self._edited_files: set[str] = set()
+        # Human approval flags
+        self.approve_plans = approve_plans
+        self.approve_submit = approve_submit
 
     def run(self):
         """Main loop. Manages GPU pool with non-blocking reviews."""
@@ -199,12 +202,22 @@ class BuilderAgent(BaseAgent):
 
         # ── Non-baseline: self-contained experiment directory flow ──
 
-        # Step 1: Create experiment directory and copy spec
+        # Step 1: Create experiment directory and save artifacts
         experiment_dir = self._make_experiment_dir(spec)
         spec.to_yaml(os.path.join(experiment_dir, "spec.yaml"))
+        self._save_queue_snapshot(experiment_dir)
 
         # Step 2: Write implementation plan (LLM chat)
         plan_text = self._write_implementation_plan(spec, experiment_dir)
+
+        # Step 2.5: Human approval of plan (if --approve-plans flag)
+        if self.approve_plans:
+            plan_path = os.path.join(experiment_dir, "PLAN.md")
+            if not self._request_human_approval("plan", spec.name, plan_path):
+                self._alert("info", f"Plan for {spec.name} rejected by human")
+                self.pool.release(slot.slot_id)
+                self.reset_conversation()
+                return
 
         # Step 3: Critic reviews plan (BLOCKING)
         approved = self._wait_for_plan_review(spec, plan_text, experiment_dir)
@@ -290,9 +303,20 @@ class BuilderAgent(BaseAgent):
         # Step 7: Git commit
         self.chat("Commit the changes with git_commit tool.")
 
-        # Step 8: Submit to SLURM
-        log_dir = os.path.join(self.config.paths.logs, spec.name)
-        os.makedirs(log_dir, exist_ok=True)
+        # Step 7.5: Human approval before GPU submission (if --approve-submit flag)
+        if self.approve_submit:
+            train_path = os.path.join(experiment_dir, "train.py")
+            print(f"\nReady to submit {spec.name} to GPU.")
+            print(f"  Experiment dir: {experiment_dir}")
+            print(f"  Time budget: {self.config.system.time_budget}s")
+            if not self._request_human_approval("submit", spec.name, train_path):
+                self._alert("info", f"Submission of {spec.name} rejected by human")
+                self.pool.release(slot.slot_id)
+                self.reset_conversation()
+                return
+
+        # Step 8: Submit to SLURM (logs go inside experiment directory)
+        log_dir = os.path.join(experiment_dir, "logs")
         command = self._build_train_command_experiment_dir(spec, experiment_dir, seed=1)
         job_id = self.runner.submit(command, spec.name, scripts_dir=experiment_dir)
         self.pool.assign(slot.slot_id, job_id, spec.name, log_dir)
@@ -304,10 +328,36 @@ class BuilderAgent(BaseAgent):
     # ── New methods for self-contained experiment directories ──
 
     def _make_experiment_dir(self, spec: ExperimentSpec) -> str:
-        """Create and return path to workspace/experiments/<spec.name>/."""
+        """Create and return path to workspace/experiments/<spec.name>/.
+
+        Creates the full directory structure:
+            experiments/<name>/
+            ├── logs/           # training logs, progress.json, slurm output
+            ├── checkpoints/    # model weights
+            └── errors/         # validation errors, crash tracebacks
+        """
         exp_dir = os.path.join(self.config.paths.workspace, "experiments", spec.name)
         os.makedirs(exp_dir, exist_ok=True)
+        os.makedirs(os.path.join(exp_dir, "logs"), exist_ok=True)
+        os.makedirs(os.path.join(exp_dir, "checkpoints"), exist_ok=True)
+        os.makedirs(os.path.join(exp_dir, "errors"), exist_ok=True)
         return exp_dir
+
+    def _save_queue_snapshot(self, experiment_dir: str):
+        """Save current queue state when pulling an experiment for debugging."""
+        snapshot_path = os.path.join(experiment_dir, "queue_snapshot.yaml")
+        try:
+            import yaml
+            items = self.queue.peek(20)  # top 20 for context
+            snapshot = [{
+                "name": spec.name,
+                "score": score,
+                "description": spec.description,
+                "category": spec.category,
+            } for spec, score in items]
+            atomic_write(snapshot_path, yaml.dump(snapshot, default_flow_style=False))
+        except Exception:
+            pass  # non-critical, don't fail experiment
 
     def _write_implementation_plan(self, spec: ExperimentSpec,
                                     experiment_dir: str) -> str:
@@ -423,13 +473,21 @@ class BuilderAgent(BaseAgent):
 
     def _validate_experiment_dir(self, spec: ExperimentSpec,
                                   experiment_dir: str) -> bool:
-        """Pre-flight validation for self-contained experiment directory."""
+        """Pre-flight validation for self-contained experiment directory.
+
+        Captures all validation output to logs/validation.log for debugging.
+        """
+        validation_log_path = os.path.join(experiment_dir, "logs", "validation.log")
+        validation_output = []
+
         train_path = os.path.join(experiment_dir, "train.py")
         if not os.path.exists(train_path):
             self._last_validation_error = f"train.py not found in {experiment_dir}/"
+            self._write_validation_log(validation_log_path, [self._last_validation_error])
             return False
 
         # Syntax check all .py files
+        validation_output.append("=== SYNTAX CHECK ===")
         self.chat(
             f"Run a syntax check using run_command: "
             f"python -c \"import py_compile; import glob; "
@@ -437,41 +495,127 @@ class BuilderAgent(BaseAgent):
             f"glob.glob('{experiment_dir}/*.py')]\""
         )
         cmd_result = self._parse_last_tool_result("run_command")
+        validation_output.append(cmd_result or "(no output)")
+
         if cmd_result is None:
             self._last_validation_error = "Syntax check was not executed (tool not called)"
+            self._write_validation_log(validation_log_path, validation_output + [self._last_validation_error])
             return False
         if "Error" in cmd_result or "Traceback" in cmd_result:
             self._last_validation_error = cmd_result
+            self._write_validation_log(validation_log_path, validation_output)
             return False
 
         # 10-second smoke test (runs on head node, keep short)
+        validation_output.append("\n=== SMOKE TEST ===")
         smoke_cmd = self._build_train_command_experiment_dir(
             spec, experiment_dir, seed=0, time_budget=10)
+        validation_output.append(f"Command: {smoke_cmd}")
         self.chat(f"Run a quick smoke test using run_command:\n{smoke_cmd}")
         cmd_result = self._parse_last_tool_result("run_command")
+        validation_output.append(cmd_result or "(no output)")
+
         if cmd_result is None:
             self._last_validation_error = "Smoke test was not executed (tool not called)"
+            self._write_validation_log(validation_log_path, validation_output + [self._last_validation_error])
             return False
         if "Error" in cmd_result or "Traceback" in cmd_result or "crash" in cmd_result.lower():
             self._last_validation_error = cmd_result
+            self._write_validation_log(validation_log_path, validation_output)
             return False
 
+        validation_output.append("\n=== VALIDATION PASSED ===")
+        self._write_validation_log(validation_log_path, validation_output)
         return True
+
+    def _write_validation_log(self, path: str, lines: list[str]):
+        """Write validation output to log file."""
+        try:
+            content = "\n".join(str(line) for line in lines)
+            atomic_write(path, content)
+        except Exception:
+            pass  # non-critical
+
+    def _request_human_approval(self, checkpoint: str, spec_name: str,
+                                 file_path: str | None = None) -> bool:
+        """Request human approval at a checkpoint. Returns True if approved.
+
+        Args:
+            checkpoint: Name of checkpoint (e.g., "plan", "submit")
+            spec_name: Name of the experiment spec
+            file_path: Optional path to file for review
+
+        Returns:
+            True if approved, False if rejected
+        """
+        prompt_text = f"\n{'='*60}\n"
+        prompt_text += f"APPROVAL REQUIRED: {checkpoint.upper()}\n"
+        prompt_text += f"Experiment: {spec_name}\n"
+        if file_path:
+            prompt_text += f"Review: {file_path}\n"
+        prompt_text += f"{'='*60}\n"
+        prompt_text += "[a]pprove / [r]eject / [v]iew file? "
+
+        while True:
+            try:
+                print(prompt_text, end="", flush=True)
+                response = input().strip().lower()
+
+                if response in ("a", "approve", "y", "yes"):
+                    self.system_logger.log(
+                        event="human_approval",
+                        checkpoint=checkpoint,
+                        spec=spec_name,
+                        decision="approved",
+                    )
+                    print(f"  Approved by human.\n")
+                    return True
+
+                elif response in ("r", "reject", "n", "no"):
+                    self.system_logger.log(
+                        event="human_approval",
+                        checkpoint=checkpoint,
+                        spec=spec_name,
+                        decision="rejected",
+                    )
+                    print(f"  Rejected by human.\n")
+                    return False
+
+                elif response in ("v", "view") and file_path:
+                    try:
+                        with open(file_path) as f:
+                            content = f.read()
+                        print(f"\n--- {file_path} ---\n{content}\n--- END ---\n")
+                    except Exception as e:
+                        print(f"  Error reading file: {e}\n")
+
+                else:
+                    print("  Invalid input. Enter 'a' to approve, 'r' to reject, 'v' to view.\n")
+
+            except EOFError:
+                # Non-interactive mode - auto-approve
+                self.system_logger.log(
+                    event="human_approval",
+                    checkpoint=checkpoint,
+                    spec=spec_name,
+                    decision="auto_approved_non_interactive",
+                )
+                return True
 
     def _build_train_command_experiment_dir(self, spec: ExperimentSpec,
                                              experiment_dir: str,
                                              seed: int,
                                              time_budget: int | None = None) -> str:
-        """Build training command for self-contained experiment directory."""
+        """Build training command for self-contained experiment directory.
+
+        All outputs go inside the experiment directory:
+            experiments/<name>/logs/          - training logs, progress.json
+            experiments/<name>/checkpoints/   - model weights
+        """
         tb = time_budget or self.config.system.time_budget
-        log_dir = os.path.join(
-            self.config.paths.logs,
-            spec.name if seed == 0 else f"{spec.name}_s{seed}",
-        )
-        ckpt_dir = os.path.join(
-            self.config.paths.checkpoints,
-            spec.name if seed == 0 else f"{spec.name}_s{seed}",
-        )
+        # Keep logs and checkpoints inside experiment directory
+        log_dir = os.path.join(experiment_dir, "logs")
+        ckpt_dir = os.path.join(experiment_dir, "checkpoints")
         train_script = os.path.join(experiment_dir, "train.py")
         return (
             f"python {train_script} "
@@ -533,9 +677,10 @@ class BuilderAgent(BaseAgent):
 
     def _handle_completion(self, slot: GPUSlot):
         """Process a completed experiment."""
-        self.pool.release(slot.slot_id)
         name = slot.experiment_name
-        log = self.runner.get_log(slot.job_id)
+        job_id = slot.job_id
+        self.pool.release(slot.slot_id)
+        log = self.runner.get_log(job_id)
         result = self._parse_results(name, log)
         self.results.add(result)
 
@@ -616,8 +761,24 @@ class BuilderAgent(BaseAgent):
                 del self.pending_pairs[parent]
 
     def _record_validation_fail(self, spec: ExperimentSpec, slot: GPUSlot):
-        """Record validation failure with 3-tier error handling."""
+        """Record validation failure with 3-tier error handling.
+
+        Saves error artifacts to experiments/<name>/errors/ for debugging.
+        """
         error = self._last_validation_error
+
+        # Save error to experiment's errors/ directory
+        experiment_dir = os.path.join(
+            self.config.paths.workspace, "experiments", spec.name)
+        errors_dir = os.path.join(experiment_dir, "errors")
+        os.makedirs(errors_dir, exist_ok=True)
+        try:
+            atomic_write(
+                os.path.join(errors_dir, "validation_error.txt"),
+                f"Validation failed for {spec.name}\n\n{error}"
+            )
+        except Exception:
+            pass
 
         builder_fault = any(f in error for f in self._edited_files)
 
@@ -676,7 +837,7 @@ class BuilderAgent(BaseAgent):
                         if self._validate_experiment_dir(spec, experiment_dir):
                             command = self._build_train_command_experiment_dir(
                                 spec, experiment_dir, seed=1)
-                            log_dir = os.path.join(self.config.paths.logs, spec_name)
+                            log_dir = os.path.join(experiment_dir, "logs")
                             job_id = self.runner.submit(
                                 command, spec_name, scripts_dir=experiment_dir)
                             self.pool.assign(new_slot.slot_id, job_id, spec_name, log_dir)
@@ -709,6 +870,8 @@ class BuilderAgent(BaseAgent):
                              time_budget: int | None = None) -> str:
         tb = time_budget or self.config.system.time_budget
         spec_path = os.path.join(self.config.paths.configs, "experiments", f"{spec.name}.yaml")
+        os.makedirs(os.path.dirname(spec_path), exist_ok=True)
+        spec.to_yaml(spec_path)
         log_dir = os.path.join(
             self.config.paths.logs,
             spec.name if seed == 0 else f"{spec.name}_s{seed}",
@@ -740,16 +903,27 @@ class BuilderAgent(BaseAgent):
         except Exception:
             pass
 
+        # Try reading persisted results.json first (survives builder restarts)
         metrics = {}
-        try:
-            lines = log.strip().split("\n")
-            for line in reversed(lines):
-                line = line.strip()
-                if line.startswith("{"):
-                    metrics = json.loads(line)
-                    break
-        except (json.JSONDecodeError, IndexError):
-            metrics = {}
+        results_file = os.path.join(self.config.paths.logs, name, "results.json")
+        if os.path.exists(results_file):
+            try:
+                with open(results_file) as f:
+                    metrics = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                metrics = {}
+
+        # Fall back to parsing last JSON line from log
+        if not metrics:
+            try:
+                lines = log.strip().split("\n")
+                for line in reversed(lines):
+                    line = line.strip()
+                    if line.startswith("{"):
+                        metrics = json.loads(line)
+                        break
+            except (json.JSONDecodeError, IndexError):
+                metrics = {}
 
         metric_name = self.task.metric[0]
         return ExperimentResult(
@@ -840,6 +1014,26 @@ class BuilderAgent(BaseAgent):
         log = self.runner.get_log(slot.job_id)
         self.pool.release(slot.slot_id)
 
+        # Save crash info to experiment's errors/ directory
+        experiment_dir = os.path.join(
+            self.config.paths.workspace, "experiments", name)
+        errors_dir = os.path.join(experiment_dir, "errors")
+        os.makedirs(errors_dir, exist_ok=True)
+        try:
+            atomic_write(
+                os.path.join(errors_dir, "runtime_error.txt"),
+                f"Training crashed for {name}\nJob ID: {slot.job_id}\n\n{log}"
+            )
+            # Also save just the traceback if we can extract it
+            if "Traceback" in log:
+                tb_start = log.rfind("Traceback")
+                atomic_write(
+                    os.path.join(errors_dir, "traceback.txt"),
+                    log[tb_start:]
+                )
+        except Exception:
+            pass
+
         fixable_patterns = [
             "OutOfMemoryError", "CUDA out of memory",
             "RuntimeError", "TypeError", "ValueError",
@@ -866,7 +1060,7 @@ class BuilderAgent(BaseAgent):
                         if new_slot:
                             command = self._build_train_command_experiment_dir(
                                 spec, experiment_dir, seed=1)
-                            log_dir = os.path.join(self.config.paths.logs, name)
+                            log_dir = os.path.join(experiment_dir, "logs")
                             job_id = self.runner.submit(
                                 command, f"{name}_fix", scripts_dir=experiment_dir)
                             self.pool.assign(new_slot.slot_id, job_id, name, log_dir)

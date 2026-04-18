@@ -33,9 +33,12 @@ from applied_scientist.tuning import HyperparameterTuner
 class AppliedScientistSystem:
     def __init__(self, config_path: str, task_module: str,
                  n_gpus: int = None, job_runner_override: str = None,
-                 test_run: bool = False, slack: bool = False):
+                 test_run: bool = False, slack: bool = False,
+                 approve_plans: bool = False, approve_submit: bool = False):
         self.test_run = test_run
         self.slack = slack
+        self.approve_plans = approve_plans
+        self.approve_submit = approve_submit
 
         # Load config
         self.config = Config.from_yaml(config_path)
@@ -138,7 +141,9 @@ class AppliedScientistSystem:
                 self.prompts["builder"], self.bus, self.cost_tracker,
                 self.queue, self.kb, self.results,
                 self.pool, self.runner, self.task,
-                self.system_logger, self.config),
+                self.system_logger, self.config,
+                approve_plans=self.approve_plans,
+                approve_submit=self.approve_submit),
             "orchestrator": OrchestratorAgent(
                 self.llms["orchestrator"],
                 get_tools("orchestrator", self.config.paths.workspace),

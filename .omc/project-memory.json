@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1775361068358,
+  "lastScanned": 1775924178142,
   "projectRoot": "/storage/project/r-jli3175-0/jphee3/autoresearch/applied-scientist",
   "techStack": {
     "languages": [
@@ -51,7 +51,7 @@
       "path": "applied_scientist",
       "purpose": null,
       "fileCount": 6,
-      "lastAccessed": 1775361068264,
+      "lastAccessed": 1775924178047,
       "keyFiles": [
         "__init__.py",
         "__main__.py",
@@ -64,7 +64,7 @@
       "path": "applied_scientist.egg-info",
       "purpose": null,
       "fileCount": 6,
-      "lastAccessed": 1775361068268,
+      "lastAccessed": 1775924178048,
       "keyFiles": [
         "PKG-INFO",
         "SOURCES.txt",
@@ -77,7 +77,7 @@
       "path": "configs",
       "purpose": null,
       "fileCount": 1,
-      "lastAccessed": 1775361068352,
+      "lastAccessed": 1775924178050,
       "keyFiles": [
         "default.yaml"
       ]
@@ -85,9 +85,10 @@
     "docs": {
       "path": "docs",
       "purpose": "Documentation",
-      "fileCount": 1,
-      "lastAccessed": 1775361068353,
+      "fileCount": 2,
+      "lastAccessed": 1775924178050,
       "keyFiles": [
+        "FULL_DOCUMENTATION.md",
         "implementation_plan.md"
       ]
     },
@@ -95,14 +96,14 @@
       "path": "tasks",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1775361068354,
+      "lastAccessed": 1775924178050,
       "keyFiles": []
     },
     "tests": {
       "path": "tests",
       "purpose": "Test files",
       "fileCount": 14,
-      "lastAccessed": 1775361068355,
+      "lastAccessed": 1775924178135,
       "keyFiles": [
         "__init__.py",
         "conftest.py",
@@ -111,11 +112,22 @@
         "test_cost_tracker.py"
       ]
     },
+    "workspace": {
+      "path": "workspace",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1775924178137,
+      "keyFiles": [
+        "ARCHITECTURAL_COMPARISON.md",
+        "REVISION_CHECKLIST.md",
+        "REVISION_SUMMARY.md"
+      ]
+    },
     "configs/examples": {
       "path": "configs/examples",
       "purpose": "Example code",
       "fileCount": 3,
-      "lastAccessed": 1775361068356,
+      "lastAccessed": 1775924178139,
       "keyFiles": [
         "mappo_spec.yaml",
         "ppo_baseline_spec.yaml",
@@ -126,12 +138,192 @@
       "path": "tasks/examples",
       "purpose": "Example code",
       "fileCount": 1,
-      "lastAccessed": 1775361068357,
+      "lastAccessed": 1775924178140,
       "keyFiles": [
         "__init__.py"
       ]
+    },
+    "workspace/scripts": {
+      "path": "workspace/scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 8,
+      "lastAccessed": 1775924178142,
+      "keyFiles": [
+        "ppo_baseline_s1_6344950.sh",
+        "ppo_baseline_s1_6345947.sh",
+        "ppo_baseline_s2_6344960.sh"
+      ]
     }
   },
-  "hotPaths": [],
+  "hotPaths": [
+    {
+      "path": "README.md",
+      "accessCount": 16,
+      "lastAccessed": 1776551163650,
+      "type": "file"
+    },
+    {
+      "path": "applied_scientist/run_experiment.py",
+      "accessCount": 7,
+      "lastAccessed": 1775925050848,
+      "type": "file"
+    },
+    {
+      "path": "applied_scientist",
+      "accessCount": 7,
+      "lastAccessed": 1775936012367,
+      "type": "directory"
+    },
+    {
+      "path": "applied_scientist/core/results_tracker.py",
+      "accessCount": 5,
+      "lastAccessed": 1775925051546,
+      "type": "file"
+    },
+    {
+      "path": "applied_scientist/agents/orchestrator.py",
+      "accessCount": 5,
+      "lastAccessed": 1776549648877,
+      "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 5,
+      "lastAccessed": 1776550948647,
+      "type": "directory"
+    },
+    {
+      "path": "applied_scientist/system.py",
+      "accessCount": 4,
+      "lastAccessed": 1776551013868,
+      "type": "directory"
+    },
+    {
+      "path": "applied_scientist/__main__.py",
+      "accessCount": 3,
+      "lastAccessed": 1776550986437,
+      "type": "file"
+    },
+    {
+      "path": "applied_scientist/tools",
+      "accessCount": 2,
+      "lastAccessed": 1775936033782,
+      "type": "directory"
+    },
+    {
+      "path": "orchestrator-6345945.out",
+      "accessCount": 1,
+      "lastAccessed": 1775924370536,
+      "type": "file"
+    },
+    {
+      "path": "orchestrator-6344949.out",
+      "accessCount": 1,
+      "lastAccessed": 1775924372037,
+      "type": "file"
+    },
+    {
+      "path": "slurm-6344000.out",
+      "accessCount": 1,
+      "lastAccessed": 1775924373436,
+      "type": "file"
+    },
+    {
+      "path": "orchestrator-6344919.out",
+      "accessCount": 1,
+      "lastAccessed": 1775924373736,
+      "type": "file"
+    },
+    {
+      "path": "workspace/scripts/ppo_baseline_s3_6344967.sh",
+      "accessCount": 1,
+      "lastAccessed": 1775924450136,
+      "type": "file"
+    },
+    {
+      "path": "workspace/results/results.tsv",
+      "accessCount": 1,
+      "lastAccessed": 1775924463046,
+      "type": "file"
+    },
+    {
+      "path": "workspace/scripts/ppo_baseline_s1_6345947.sh",
+      "accessCount": 1,
+      "lastAccessed": 1775924465247,
+      "type": "file"
+    },
+    {
+      "path": "applied_scientist/compute/slurm.py",
+      "accessCount": 1,
+      "lastAccessed": 1775924723644,
+      "type": "file"
+    },
+    {
+      "path": "applied_scientist/config.py",
+      "accessCount": 1,
+      "lastAccessed": 1775924735054,
+      "type": "file"
+    },
+    {
+      "path": "workspace/scripts/slurm-6345947.out",
+      "accessCount": 1,
+      "lastAccessed": 1775924797435,
+      "type": "file"
+    },
+    {
+      "path": "workspace/scripts/slurm-6344950.out",
+      "accessCount": 1,
+      "lastAccessed": 1775924798550,
+      "type": "file"
+    },
+    {
+      "path": "applied_scientist/core/spec.py",
+      "accessCount": 1,
+      "lastAccessed": 1775924985065,
+      "type": "directory"
+    },
+    {
+      "path": "orchestrator-6421912.out",
+      "accessCount": 1,
+      "lastAccessed": 1775925158836,
+      "type": "file"
+    },
+    {
+      "path": "workspace/scripts/ppo_baseline_s1_6421913.sh",
+      "accessCount": 1,
+      "lastAccessed": 1775925347361,
+      "type": "file"
+    },
+    {
+      "path": "workspace/scripts/slurm-6421913.out",
+      "accessCount": 1,
+      "lastAccessed": 1775925354044,
+      "type": "file"
+    },
+    {
+      "path": "applied_scientist/agents",
+      "accessCount": 1,
+      "lastAccessed": 1775935980452,
+      "type": "directory"
+    },
+    {
+      "path": "applied_scientist/agents/explorer.py",
+      "accessCount": 1,
+      "lastAccessed": 1775936005765,
+      "type": "directory"
+    },
+    {
+      "path": "applied_scientist/tools/__init__.py",
+      "accessCount": 1,
+      "lastAccessed": 1775936027454,
+      "type": "file"
+    },
+    {
+      "path": "applied_scientist/core/message_bus.py",
+      "accessCount": 1,
+      "lastAccessed": 1776548689736,
+      "type": "file"
+    }
+  ],
   "userDirectives": []
 }

@@ -39,19 +39,33 @@ class ResultsTracker:
         self._direction = metric_direction  # "higher" or "lower"
         self._lock = threading.Lock()
         self._results: list[ExperimentResult] = []
+
+        def _to_int(v, default=0):
+            if v is None or v == "":
+                return default
+            return int(float(v))
+
+        def _to_float(v, default=0.0):
+            if v is None or v == "":
+                return default
+            return float(v)
+
         if os.path.exists(path):
             with open(path, newline="") as f:
                 reader = csv.DictReader(f, delimiter="\t")
                 for row in reader:
                     self._results.append(ExperimentResult(
-                        name=row["name"], commit=row["commit"],
-                        algorithm=row["algorithm"], model=row["model"],
-                        metric_value=float(row["metric_value"]) if row["metric_value"] else None,
-                        metric_std=float(row["metric_std"]) if row["metric_std"] else None,
-                        seeds=int(row["seeds"]),
-                        training_seconds=float(row["training_seconds"]),
-                        peak_memory_mb=float(row["peak_memory_mb"]),
-                        status=row["status"], description=row["description"],
+                        name=row.get("name", "") or "",
+                        commit=row.get("commit", "") or "",
+                        algorithm=row.get("algorithm", "") or "",
+                        model=row.get("model", "") or "",
+                        metric_value=_to_float(row.get("metric_value"), default=None) if row.get("metric_value") not in (None, "") else None,
+                        metric_std=_to_float(row.get("metric_std"), default=None) if row.get("metric_std") not in (None, "") else None,
+                        seeds=_to_int(row.get("seeds")),
+                        training_seconds=_to_float(row.get("training_seconds")),
+                        peak_memory_mb=_to_float(row.get("peak_memory_mb")),
+                        status=row.get("status", "") or "",
+                        description=row.get("description", "") or "",
                         extra_metrics=json.loads(row.get("extra_metrics", "{}"))
                         if row.get("extra_metrics") else {},
                     ))

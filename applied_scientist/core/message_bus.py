@@ -11,6 +11,7 @@ from typing import Callable
 from applied_scientist.core.utils import atomic_write
 
 # Priority constants — higher = processed first
+PRIORITY_HUMAN_DIRECTIVE = 150  # Human commands bypass review, run next
 PRIORITY_CODE_REVIEW = 100
 PRIORITY_PLAN_REVIEW = 90
 PRIORITY_SPEC_REVIEW = 80

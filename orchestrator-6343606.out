@@ -1,0 +1,26 @@
+---------------------------------------
+Begin Slurm Prolog: Apr-08-2026 21:42:49
+Job ID:    6343606
+User ID:   jphee3
+Account:   gts-jli3175
+Job name:  applied-scientist
+Partition: cpu-small
+QOS:       inferno
+---------------------------------------
+Slack send failed (retrying once): The request to the Slack API failed. (url: https://slack.com/api/chat.postMessage)
+The server responded with: {'ok': False, 'error': 'not_in_channel'}
+Slack send retry failed: The request to the Slack API failed. (url: https://slack.com/api/chat.postMessage)
+The server responded with: {'ok': False, 'error': 'not_in_channel'}
+[2026-04-08T21:45:02.356] error: *** JOB 6343606 ON atl1-1-02-003-16-2 CANCELLED AT 2026-04-08T21:45:02 DUE to SIGNAL Terminated ***
+---------------------------------------
+Begin Slurm Epilog: Apr-08-2026 21:45:05
+Job ID:        6343606
+User ID:       jphee3
+Account:       gts-jli3175
+Job name:      applied-scientist
+Resources:     cpu=1,mem=8G,node=1
+Rsrc Used:     cput=00:02:14,vmem=0,walltime=00:02:14,mem=210800K,energy_used=0
+Partition:     cpu-small
+QOS:           inferno
+Nodes:         atl1-1-02-003-16-2
+---------------------------------------

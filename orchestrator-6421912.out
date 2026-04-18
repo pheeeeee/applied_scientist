@@ -1,0 +1,24 @@
+---------------------------------------
+Begin Slurm Prolog: Apr-11-2026 12:32:18
+Job ID:    6421912
+User ID:   jphee3
+Account:   gts-jli3175
+Job name:  applied-scientist
+Partition: cpu-small
+QOS:       inferno
+---------------------------------------
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-04-11T12:59:44.766] error: *** JOB 6421912 ON atl1-1-02-017-4-2 CANCELLED AT 2026-04-11T12:59:44 DUE to SIGNAL Terminated ***
+[2026-04-11T12:59:44.767] error: *** STEP 6421912.0 ON atl1-1-02-017-4-2 CANCELLED AT 2026-04-11T12:59:44 DUE to SIGNAL Terminated ***
+---------------------------------------
+Begin Slurm Epilog: Apr-11-2026 12:59:51
+Job ID:        6421912
+User ID:       jphee3
+Account:       gts-jli3175
+Job name:      applied-scientist
+Resources:     cpu=1,mem=8G,node=1
+Rsrc Used:     cput=00:27:27,vmem=0,walltime=00:27:27,mem=15860K,energy_used=0
+Partition:     cpu-small
+QOS:           inferno
+Nodes:         atl1-1-02-017-4-2
+---------------------------------------

@@ -17,7 +17,17 @@ def main():
                         help="Validate pipeline without full run")
     parser.add_argument("--slack", action="store_true",
                         help="Use Slack for I/O (requires SLACK_* env vars)")
+    parser.add_argument("--approve-plans", action="store_true",
+                        help="Require human approval after PLAN.md before implementing")
+    parser.add_argument("--approve-submit", action="store_true",
+                        help="Require human approval before submitting to GPU")
+    parser.add_argument("--approve-all", action="store_true",
+                        help="Enable all human approval checkpoints")
     args = parser.parse_args()
+
+    # --approve-all enables all individual flags
+    approve_plans = args.approve_plans or args.approve_all
+    approve_submit = args.approve_submit or args.approve_all
 
     system = AppliedScientistSystem(
         config_path=args.config,
@@ -26,6 +36,8 @@ def main():
         job_runner_override=args.job_runner,
         test_run=args.test_run,
         slack=args.slack,
+        approve_plans=approve_plans,
+        approve_submit=approve_submit,
     )
     system.start()
 

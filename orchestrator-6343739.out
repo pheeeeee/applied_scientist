@@ -1,0 +1,22 @@
+---------------------------------------
+Begin Slurm Prolog: Apr-08-2026 21:56:30
+Job ID:    6343739
+User ID:   jphee3
+Account:   gts-jli3175
+Job name:  applied-scientist
+Partition: cpu-small
+QOS:       inferno
+---------------------------------------
+[2026-04-08T22:35:21.576] error: *** JOB 6343739 ON atl1-1-02-003-16-2 CANCELLED AT 2026-04-08T22:35:21 DUE to SIGNAL Terminated ***
+---------------------------------------
+Begin Slurm Epilog: Apr-08-2026 22:35:24
+Job ID:        6343739
+User ID:       jphee3
+Account:       gts-jli3175
+Job name:      applied-scientist
+Resources:     cpu=1,mem=8G,node=1
+Rsrc Used:     cput=00:38:52,vmem=0,walltime=00:38:52,mem=1593884K,energy_used=0
+Partition:     cpu-small
+QOS:           inferno
+Nodes:         atl1-1-02-003-16-2
+---------------------------------------

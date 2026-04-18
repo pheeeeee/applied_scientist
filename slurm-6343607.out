@@ -1,0 +1,33 @@
+---------------------------------------
+Begin Slurm Prolog: Apr-08-2026 21:45:17
+Job ID:    6343607
+User ID:   jphee3
+Account:   gts-jli3175
+Job name:  ppo_baseline_s1
+Partition: gpu-v100
+QOS:       inferno
+---------------------------------------
+Traceback (most recent call last):
+  File "/storage/home/hcoda1/7/jphee3/r-jli3175-0/conda_envs/soccertwos/lib/python3.8/runpy.py", line 194, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/storage/home/hcoda1/7/jphee3/r-jli3175-0/conda_envs/soccertwos/lib/python3.8/runpy.py", line 87, in _run_code
+    exec(code, run_globals)
+  File "/storage/project/r-jli3175-0/jphee3/autoresearch/applied-scientist/applied_scientist/run_experiment.py", line 63, in <module>
+    main()
+  File "/storage/project/r-jli3175-0/jphee3/autoresearch/applied-scientist/applied_scientist/run_experiment.py", line 41, in main
+    experiment_spec = ExperimentSpec.from_yaml(args.spec)
+  File "/storage/project/r-jli3175-0/jphee3/autoresearch/applied-scientist/applied_scientist/core/spec.py", line 51, in from_yaml
+    with open(path) as f:
+FileNotFoundError: [Errno 2] No such file or directory: './workspace/configs/experiments/ppo_baseline.yaml'
+---------------------------------------
+Begin Slurm Epilog: Apr-08-2026 21:45:18
+Job ID:        6343607
+User ID:       jphee3
+Account:       gts-jli3175
+Job name:      ppo_baseline_s1
+Resources:     cpu=12,gres/gpu:v100=1,mem=48G,node=1
+Rsrc Used:     cput=00:00:24,vmem=0,walltime=00:00:02,mem=20772K,energy_used=0
+Partition:     gpu-v100
+QOS:           inferno
+Nodes:         atl1-1-03-006-33-0
+---------------------------------------

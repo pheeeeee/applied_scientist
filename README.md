@@ -292,7 +292,37 @@ python -m applied_scientist \
   --task tasks/examples/soccer_twos \
   --job-runner slurm \
   --n-gpus 4
+
+# Interactive mode with human approval checkpoints
+python -m applied_scientist \
+  --config configs/my_config.yaml \
+  --task tasks/examples/soccer_twos \
+  --approve-plans \
+  --approve-submit
 ```
+
+**Human Approval Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--approve-plans` | Pause after PLAN.md is written, wait for human approval before implementing |
+| `--approve-submit` | Pause after code is validated, wait for human approval before using GPU |
+| `--approve-all` | Enable all approval checkpoints |
+
+When a checkpoint is reached, the terminal prompts:
+```
+============================================================
+APPROVAL REQUIRED: PLAN
+Experiment: mappo_attention
+Review: experiments/mappo_attention/PLAN.md
+============================================================
+[a]pprove / [r]eject / [v]iew file? _
+```
+
+Use these flags to:
+- Debug failing experiments step-by-step
+- Learn how the system works before going fully autonomous
+- Ensure human oversight on expensive GPU runs
 
 **Where does output go?** All output is saved under the `paths.workspace` directory from your config. By default this is `./workspace/` relative to where you ran the command:
 
@@ -304,25 +334,33 @@ your-project/                          # where you ran the command
 └── workspace/                         # ALL OUTPUT GOES HERE
     ├── configs/
     │   ├── drafts/                    # specs under review
-    │   ├── experiments/               # approved specs
+    │   ├── experiments/               # approved specs (baseline only)
     │   └── priority_queue.yaml        # ranked queue
     ├── experiments/                    # self-contained experiment directories
-    │   └── <experiment>/
-    │       ├── PLAN.md                # Critic-reviewed implementation plan
+    │   └── <experiment>/              # EVERYTHING for one experiment in one place
     │       ├── spec.yaml              # copy of experiment spec
+    │       ├── queue_snapshot.yaml    # queue state when this was pulled
+    │       ├── PLAN.md                # Critic-reviewed implementation plan
     │       ├── train.py               # self-contained training script
     │       ├── model.py               # model/policy code
     │       ├── [other files]          # as needed per algorithm
-    │       └── run_<job_id>.sh        # saved sbatch script
+    │       ├── run_<job_id>.sh        # saved sbatch script
+    │       ├── logs/                  # training output (consolidated)
+    │       │   ├── slurm-<jobid>.out  # stdout/stderr
+    │       │   ├── progress.json      # live training progress
+    │       │   └── validation.log     # pre-flight validation output
+    │       ├── checkpoints/           # saved model weights
+    │       └── errors/                # failure artifacts (if crashed)
+    │           ├── validation_error.txt   # smoke test failure
+    │           ├── runtime_error.txt      # training crash log
+    │           └── traceback.txt          # extracted stack trace
     ├── results/
     │   ├── results.tsv                # experiment leaderboard
     │   ├── knowledge.md               # curated insights
     │   ├── review_log.jsonl           # Critic audit trail
     │   ├── explorer_journal.jsonl     # paper reading log
     │   ├── system_events.jsonl        # system timeline
-    │   ├── ideas_for_system2.md       # novel ideas
-    │   ├── logs/<experiment>/         # training logs + progress.json
-    │   └── checkpoints/<experiment>/  # saved model weights
+    │   └── ideas_for_system2.md       # novel ideas
     ├── .state/                        # crash recovery (auto-managed)
     └── .git/                          # version history of all code changes
 ```
@@ -404,9 +442,11 @@ paths:
   workspace: ./workspace
   results: ./workspace/results
   configs: ./workspace/configs
-  checkpoints: ./workspace/results/checkpoints
-  logs: ./workspace/results/logs
+  checkpoints: ./workspace/results/checkpoints  # used for baseline only
+  logs: ./workspace/results/logs                # used for baseline only
 ```
+
+**Note:** Non-baseline experiments use a consolidated structure where all artifacts (logs, checkpoints, errors) are stored inside `experiments/<name>/` for easier debugging. The `checkpoints` and `logs` paths above are only used for baseline experiments.
 
 ---
 
@@ -750,6 +790,62 @@ While the system runs, you have two ways to communicate:
 | `resume` | Resume submitting |
 | `gpus N` | Resize GPU pool to N slots |
 
+**Human directive commands** (bypass Critic review, insert directly to queue):
+
+| Command | Action |
+|---------|--------|
+| `/try <description>` | Quick experiment injection. Parses `key=value` config from description. |
+| `/paper <reference>` | Send paper to Explorer for investigation with high priority. |
+| `/config <spec> <changes>` | Clone existing spec with modified config (e.g., `/config mappo lr=0.0001`). |
+| `/priority <spec_name>` | Boost existing spec to run next (score 100.0). |
+| `/load <file.yaml>` | Bulk inject experiments from a YAML file. |
+
+Human directives skip the Critic entirely and insert directly into the priority queue with a high score (100.0), ensuring they run next. All directives are logged as `human_directive` events in `system_events.jsonl`.
+
+**Examples:**
+
+```
+> /try PPO with entropy bonus lr=0.001 ent_coef=0.05
+Queued: human_ppo_with_entropy_1234 (score: 100.0)
+
+> /paper "Multi-Agent Actor-Critic for Mixed Cooperative-Competitive Environments"
+Sent to Explorer: investigate 'Multi-Agent Actor-Critic...'
+
+> /config mappo lr=0.0001 batch_size=512
+Created variant: mappo_variant_5678 with {'lr': 0.0001, 'batch_size': 512}
+
+> /priority qmix
+Boosted 'qmix' to score 100.0
+
+> /load experiments_batch.yaml
+Loaded 5 specs from experiments_batch.yaml
+```
+
+**YAML format for `/load`:**
+
+```yaml
+- score: 100.0
+  spec:
+    name: ppo_baseline
+    description: "PPO baseline experiment"
+    source_paper: "human directive"
+    architecture: {}
+    why_it_might_work: "Testing PPO"
+    task_config: {}
+    training_config: {lr: 0.001, gamma: 0.99}
+    resource_estimate: {}
+- score: 95.0
+  spec:
+    name: mappo_variant
+    description: "MAPPO with lower learning rate"
+    source_paper: "human directive"
+    architecture: {}
+    why_it_might_work: "Testing lower LR"
+    task_config: {}
+    training_config: {lr: 0.0001}
+    resource_estimate: {}
+```
+
 ---
 
 ## Experiment Lifecycle
@@ -823,7 +919,7 @@ Here is exactly what happens when one experiment runs, from start to finish:
     Job completes. Builder Python code reads the log.
     Metrics: win_rate=0.78, episode_reward_mean=1.65, peak_memory_mb=6200.
     Appended to results.tsv with commit hash a3f72bc (atomic write).
-    Checkpoint saved to results/checkpoints/mappo/.
+    Checkpoint saved to experiments/mappo/checkpoints/.
     GPU slot 2 released → immediately filled with next spec from queue.
 
 11. INSIGHT (non-blocking submit)
@@ -872,11 +968,27 @@ workspace/
 │   ├── drafts/                              Specs under review or awaiting revision
 │   │   ├── attention_ppo.yaml
 │   │   └── tarmac_v2.yaml
-│   ├── experiments/                         Approved specs (moved from drafts/ by Critic)
-│   │   ├── ppo_baseline.yaml
-│   │   ├── mappo.yaml
-│   │   └── qmix.yaml
+│   ├── experiments/                         Approved specs (baseline only)
+│   │   └── ppo_baseline.yaml
 │   └── priority_queue.yaml                  Ranked queue of pending experiments
+│
+├── experiments/                             Self-contained experiment directories
+│   └── mappo/                               EVERYTHING for one experiment
+│       ├── spec.yaml                        Copy of experiment spec
+│       ├── queue_snapshot.yaml              Queue state when pulled (for debugging)
+│       ├── PLAN.md                          Critic-reviewed implementation plan
+│       ├── train.py                         Self-contained training script
+│       ├── model.py                         Model/policy code
+│       ├── run_12346.sh                     Saved sbatch script
+│       ├── logs/                            Training output
+│       │   ├── slurm-12346.out              Raw stdout/stderr
+│       │   ├── progress.json                Live training progress
+│       │   └── validation.log               Pre-flight validation output
+│       ├── checkpoints/                     Saved model weights
+│       └── errors/                          Failure artifacts (if crashed)
+│           ├── validation_error.txt         Smoke test failure details
+│           ├── runtime_error.txt            Full crash log
+│           └── traceback.txt                Extracted stack trace
 │
 ├── results/
 │   ├── results.tsv                          Leaderboard: one row per experiment
@@ -884,21 +996,7 @@ workspace/
 │   ├── review_log.jsonl                     Every Critic review decision (audit trail)
 │   ├── explorer_journal.jsonl               Every paper Explorer read (with summaries)
 │   ├── system_events.jsonl                  Timeline of notable system events
-│   ├── ideas_for_system2.md                 Novel ideas flagged for deeper investigation
-│   ├── logs/                                Per-experiment training output
-│   │   ├── ppo_baseline_s1/
-│   │   │   ├── slurm-12345.out              Raw stdout/stderr from training
-│   │   │   └── progress.json                Live training progress (for early stopping)
-│   │   ├── mappo/
-│   │   │   ├── slurm-12346.out
-│   │   │   └── progress.json
-│   │   └── ...
-│   └── checkpoints/                         Saved model weights
-│       ├── ppo_baseline_s1/
-│       ├── ppo_baseline_s2/
-│       ├── ppo_baseline_s3/
-│       ├── mappo/
-│       └── ...
+│   └── ideas_for_system2.md                 Novel ideas flagged for deeper investigation
 │
 └── tasks/
     └── examples/
@@ -970,11 +1068,19 @@ Status values: `baseline`, `keep`, `crash`, `early_stop`, `timeout`, `validation
 
 #### Training Output (per experiment)
 
+All training artifacts are consolidated inside `experiments/<name>/` for easy debugging:
+
 | File | Writer | Reader | Description |
 |------|--------|--------|-------------|
-| `results/logs/<name>/slurm-<jobid>.out` | Compute backend (SLURM or local) | Builder (reads on completion/failure) | Raw stdout/stderr from the training process. |
-| `results/logs/<name>/progress.json` | Training script (your task adapter's `train()`) | Builder (polls for early stopping) | Written periodically during training: `{"step": 50000, "win_rate": 0.43, "elapsed_seconds": 600}` |
-| `results/checkpoints/<name>/` | Training script | Task adapter's `evaluate()` | Saved model weights. Loadable for evaluation, deployment, or fine-tuning. |
+| `experiments/<name>/spec.yaml` | Builder | Builder, You | Copy of the experiment spec that was executed. |
+| `experiments/<name>/queue_snapshot.yaml` | Builder | You (debugging) | Queue state when this experiment was pulled — shows what else was pending. |
+| `experiments/<name>/logs/slurm-<jobid>.out` | Compute backend | Builder, You | Raw stdout/stderr from the training process. |
+| `experiments/<name>/logs/progress.json` | Training script | Builder (polls for early stopping) | Written periodically: `{"step": 50000, "win_rate": 0.43, "elapsed_seconds": 600}` |
+| `experiments/<name>/logs/validation.log` | Builder | You (debugging) | Pre-flight validation output (syntax check + smoke test). |
+| `experiments/<name>/checkpoints/` | Training script | Task adapter's `evaluate()` | Saved model weights. |
+| `experiments/<name>/errors/validation_error.txt` | Builder | You (debugging) | Details of smoke test failure (if validation failed). |
+| `experiments/<name>/errors/runtime_error.txt` | Builder | You (debugging) | Full crash log (if training crashed). |
+| `experiments/<name>/errors/traceback.txt` | Builder | You (debugging) | Extracted Python traceback (if available). |
 
 #### Implementation Code
 
@@ -997,9 +1103,9 @@ Status values: `baseline`, `keep`, `crash`, `early_stop`, `timeout`, `validation
 |-------|--------|-------|
 | **Explorer** | `configs/drafts/*.yaml`, `results/explorer_journal.jsonl` | `results/results.tsv`, `results/knowledge.md` (synthesis), `configs/drafts/` + `configs/experiments/` (name dedup) |
 | **Critic** | Moves `drafts/` → `configs/experiments/`, inserts into `priority_queue.yaml`, appends to `results/review_log.jsonl`, appends to `results/ideas_for_system2.md` | `configs/drafts/*.yaml`, `results/results.tsv`, `results/knowledge.md`, `priority_queue.yaml` |
-| **Builder** | Creates `experiments/<name>/` directories (PLAN.md, spec.yaml, train.py, model code, sbatch scripts), `git commit`, appends to `results/results.tsv`, writes to `results/knowledge.md` (approved insights only), creates `results/logs/<name>/` | `configs/experiments/*.yaml`, `experiments/<name>/spec.yaml`, `priority_queue.yaml` (pop), `results/results.tsv`, `results/logs/<name>/progress.json`, baseline `tasks/.../train.py` (as reference) |
+| **Builder** | Creates `experiments/<name>/` directories (spec.yaml, queue_snapshot.yaml, PLAN.md, train.py, model code, logs/, checkpoints/, errors/), `git commit`, appends to `results/results.tsv`, writes to `results/knowledge.md` (approved insights only) | `configs/experiments/*.yaml`, `experiments/<name>/spec.yaml`, `priority_queue.yaml` (pop), `results/results.tsv`, `experiments/<name>/logs/progress.json`, baseline `tasks/.../train.py` (as reference) |
 | **Orchestrator** | Nothing persistent | Everything (read-only, for status display) |
-| **Training script** | `results/logs/<name>/progress.json`, `results/checkpoints/<name>/`, stdout/stderr | Task source code |
+| **Training script** | `experiments/<name>/logs/progress.json`, `experiments/<name>/checkpoints/`, stdout/stderr | Task source code |
 | **System** | `.state/gpu_slots.json`, `.state/pending_messages.json`, `results/system_events.jsonl`, `git init` | Config YAML, all state files on recovery |
 
 ### Reproducibility

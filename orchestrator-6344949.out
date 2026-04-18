@@ -1,0 +1,25 @@
+---------------------------------------
+Begin Slurm Prolog: Apr-08-2026 23:37:23
+Job ID:    6344949
+User ID:   jphee3
+Account:   gts-jli3175
+Job name:  applied-scientist
+Partition: cpu-small
+QOS:       inferno
+---------------------------------------
+srun: forcing job termination
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-04-08T23:59:15.645] error: *** STEP 6344949.0 ON atl1-1-02-003-16-1 CANCELLED AT 2026-04-08T23:59:15 DUE to SIGNAL Killed ***
+srun: error: atl1-1-02-003-16-1: task 0: Killed
+---------------------------------------
+Begin Slurm Epilog: Apr-08-2026 23:59:16
+Job ID:        6344949
+User ID:       jphee3
+Account:       gts-jli3175
+Job name:      applied-scientist
+Resources:     cpu=1,mem=8G,node=1
+Rsrc Used:     cput=00:21:54,vmem=0,walltime=00:21:54,mem=15568K,energy_used=0
+Partition:     cpu-small
+QOS:           inferno
+Nodes:         atl1-1-02-003-16-1
+---------------------------------------
