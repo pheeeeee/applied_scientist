@@ -26,6 +26,9 @@ llm:
   builder:
     backend: anthropic
     model: claude-sonnet-4-6
+  debugger:                              # Diagnoses job failures (optional, defaults to builder's model)
+    backend: anthropic
+    model: claude-haiku-4-5-20251001     # Haiku is sufficient for error diagnosis
   orchestrator:
     backend: anthropic
     model: claude-haiku-4-5-20251001
@@ -33,13 +36,16 @@ llm:
 compute:
   backend: slurm
   slurm:
-    partition: gpu
-    gres: "gpu:1"
+    account: YOUR_ACCOUNT             # REQUIRED on PACE - your PI's account (e.g., gts-mypi)
+    partition: gpu-v100               # or gpu-a100
+    gres: "gpu:V100:1"                # explicit GPU type recommended
     mem: "48G"
     time: "01:00:00"
     setup_commands:
       - "source ~/miniconda3/etc/profile.d/conda.sh"
       - "conda activate soccer_env"
+      # Add applied_scientist to PYTHONPATH if not pip installed:
+      # - "export PYTHONPATH=/path/to/applied-scientist:${PYTHONPATH:-}"
 
 task:
   module: tasks/examples/soccer_twos

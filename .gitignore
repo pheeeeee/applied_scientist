@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Local development
+.env
+.envrc
+
+# Claude Code / OMC local state (contains session-specific data)
+.omc/
+
+# Applied Scientist workspace (generated at runtime)
+workspace/
+
+# SLURM output files
+slurm-*.out
+slurm-*.err
+as_test_*.out
+as_test_*.err
+test_env-*.out
+
+# OS files
+.DS_Store
+Thumbs.db

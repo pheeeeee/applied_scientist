@@ -1,0 +1,76 @@
+# Configuration for 2v2 Soccer task using Claude subscription (claudecode backend)
+#
+# This config routes all LLM calls through the `claude` CLI instead of the
+# Anthropic API. Requires:
+#   1. Claude Code CLI installed and on PATH
+#   2. Active Claude Pro/Max subscription
+#   3. OAuth credentials in ~/.claude (or set CLAUDE_CONFIG_DIR)
+#
+# LIMITATIONS:
+#   - Rate limits will cause stalls (subscription is for human-interactive use)
+#   - Lower throughput than API due to subprocess overhead
+#   - May violate ToS if used heavily - read current terms
+#
+# Use this for: development, debugging, low-volume runs, cost avoidance
+# Do NOT use for: continuous multi-day sweeps, production runs
+
+system:
+  time_budget: 1800
+  n_gpus: 4
+  baseline_seeds: 3
+  eval_samples: 100
+  early_stop_fraction: 0.4
+  max_spec_review_rounds: 3
+  queue_throttle_high: 10
+  queue_throttle_low: 5
+  timeout_multiplier: 2.0
+
+tuning:
+  enabled: false                 # disable tuning to reduce call volume
+  max_iterations: 5
+  min_iterations: 1
+
+# All agents use claudecode backend (subscription-based)
+# Mix model sizes by agent role:
+#   - Explorer/Orchestrator: haiku (cheap, high call frequency)
+#   - Critic/Builder: sonnet (quality matters for code/reviews)
+llm:
+  explorer:
+    backend: claudecode
+    model: haiku
+  critic:
+    backend: claudecode
+    model: sonnet
+  builder:
+    backend: claudecode
+    model: sonnet
+  orchestrator:
+    backend: claudecode
+    model: haiku
+  debugger:                              # Diagnoses job failures (optional, defaults to builder's model)
+    backend: claudecode
+    model: haiku                         # Haiku is sufficient for error diagnosis
+
+compute:
+  backend: slurm
+  slurm:
+    account: YOUR_ACCOUNT             # REQUIRED on PACE - your PI's account (e.g., gts-mypi)
+    partition: gpu-v100               # or gpu-a100
+    gres: "gpu:V100:1"                # explicit GPU type recommended
+    mem: "48G"
+    time: "01:00:00"
+    setup_commands:
+      - "source ~/miniconda3/etc/profile.d/conda.sh"
+      - "conda activate soccer_env"
+      # Add applied_scientist to PYTHONPATH if not pip installed:
+      # - "export PYTHONPATH=/path/to/applied-scientist:${PYTHONPATH:-}"
+
+task:
+  module: tasks/examples/soccer_twos
+
+paths:
+  workspace: ./workspace
+  results: ./workspace/results
+  configs: ./workspace/configs
+  checkpoints: ./workspace/results/checkpoints
+  logs: ./workspace/results/logs

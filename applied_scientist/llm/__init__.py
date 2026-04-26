@@ -23,6 +23,9 @@ def get_backend(config: dict) -> LLMBackend:
     elif backend_name == "openai_compatible":
         from applied_scientist.llm.openai_compatible import OpenAICompatibleBackend
         return OpenAICompatibleBackend(**kwargs)
+    elif backend_name == "claudecode":
+        from applied_scientist.llm.claudecode_backend import ClaudeCodeBackend
+        return ClaudeCodeBackend(**kwargs)
     else:
         raise ValueError(f"Unknown LLM backend: {backend_name}. "
-                         f"Available: anthropic, openai, gemini, openai_compatible")
+                         f"Available: anthropic, openai, gemini, openai_compatible, claudecode")

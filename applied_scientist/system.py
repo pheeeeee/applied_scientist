@@ -18,6 +18,7 @@ from applied_scientist.agents.explorer import ExplorerAgent
 from applied_scientist.agents.critic import CriticAgent
 from applied_scientist.agents.builder import BuilderAgent
 from applied_scientist.agents.orchestrator import OrchestratorAgent
+from applied_scientist.agents.debugger import DebuggerAgent
 from applied_scientist.llm import get_backend
 from applied_scientist.llm.base import LLMMessage
 from applied_scientist.tools import get_tools
@@ -72,8 +73,14 @@ class AppliedScientistSystem:
 
         # Initialize LLM backends
         self.llms = {}
-        for role in ["explorer", "critic", "builder", "orchestrator"]:
-            llm_config = self.config.llm[role]
+        for role in ["explorer", "critic", "builder", "orchestrator", "debugger"]:
+            # Debugger uses same config as builder if not specified
+            if role == "debugger" and role not in self.config.llm:
+                llm_config = self.config.llm.get("builder") or self.config.llm["critic"]
+            else:
+                llm_config = self.config.llm.get(role)
+                if llm_config is None:
+                    continue
             backend_kwargs = {
                 "backend": llm_config.backend,
                 "model": llm_config.model,
@@ -85,7 +92,8 @@ class AppliedScientistSystem:
             self.cost_tracker.register(role, self.llms[role].get_model_id())
 
         # Initialize compute backend
-        self.runner = get_runner(self.config.compute)
+        self.runner = get_runner(self.config.compute,
+                                 workspace=self.config.paths.workspace)
 
         # Initialize tuner
         self.tuner = HyperparameterTuner(self.task, self.runner, self.config) \
@@ -114,6 +122,12 @@ class AppliedScientistSystem:
                 self.queue, self.kb, self.results,
                 self.pool, self.runner, self.task,
                 self.system_logger, self.config),
+            "debugger": DebuggerAgent(
+                self.llms["debugger"],
+                get_tools("debugger", self.config.paths.workspace),
+                self.prompts["debugger"], self.bus, self.cost_tracker,
+                self.results, self.runner, self.system_logger,
+                self.config, self.config.paths.workspace),
             "orchestrator": OrchestratorAgent(
                 self.llms["orchestrator"],
                 get_tools("orchestrator", self.config.paths.workspace),
@@ -134,7 +148,7 @@ class AppliedScientistSystem:
         self._recover_state()
 
         self.threads = {}
-        for name in ["explorer", "critic", "builder"]:
+        for name in ["explorer", "critic", "builder", "debugger"]:
             t = threading.Thread(target=self.agents[name].run, name=name, daemon=True)
             t.start()
             self.threads[name] = t
@@ -193,6 +207,9 @@ class AppliedScientistSystem:
                           cwd=self.config.paths.workspace, capture_output=True)
 
     def _get_api_key(self, backend: str) -> str:
+        # claudecode backend uses OAuth subscription auth, not API keys
+        if backend == "claudecode":
+            return ""
         key_map = {
             "anthropic": "ANTHROPIC_API_KEY",
             "openai": "OPENAI_API_KEY",
@@ -265,11 +282,11 @@ class AppliedScientistSystem:
             self.agents["builder"].pending_pairs = BuilderAgent.load_pairs(pairs_path)
 
     def _watchdog(self):
-        restart_counts = {name: 0 for name in ["explorer", "critic", "builder"]}
+        restart_counts = {name: 0 for name in ["explorer", "critic", "builder", "debugger"]}
         max_restarts = 3
         while not self.agents["orchestrator"]._stopped:
             time.sleep(30)
-            for name in ["explorer", "critic", "builder"]:
+            for name in ["explorer", "critic", "builder", "debugger"]:
                 thread = self.threads.get(name)
                 if thread and not thread.is_alive():
                     if restart_counts[name] >= max_restarts:
@@ -314,7 +331,7 @@ class AppliedScientistSystem:
         }
         return {
             role: env.get_template(f"{role}.md.j2").render(**context)
-            for role in ["explorer", "critic", "builder", "orchestrator"]
+            for role in ["explorer", "critic", "builder", "orchestrator", "debugger"]
         }
 
     def _load_task_adapter(self, module_path: str):

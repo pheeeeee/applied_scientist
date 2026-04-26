@@ -62,7 +62,7 @@ class BuilderAgent(BaseAgent):
                 time.sleep(10)
 
     def _handle_inbox(self):
-        """Process Critic and Orchestrator responses."""
+        """Process Critic, Orchestrator, and Debugger responses."""
         for msg in self._process_inbox():
             if msg.type == "code_rejected":
                 self._handle_code_rejection(msg)
@@ -76,6 +76,12 @@ class BuilderAgent(BaseAgent):
                 self._handle_triaged_suggestion(msg)
             elif msg.type == "clarification_response":
                 pass
+            elif msg.type == "retry_experiment":
+                # From Debugger: retry a failed experiment
+                self._handle_retry_request(msg)
+            elif msg.type == "fix_required":
+                # From Debugger: apply code fix and retry
+                self._handle_fix_required(msg)
             elif msg.type == "command":
                 action = msg.payload.get("action", "")
                 if action == "pause":
@@ -565,49 +571,110 @@ class BuilderAgent(BaseAgent):
         self.system_logger.log(event="experiment_timeout", spec=name)
 
     def _handle_failure(self, slot: GPUSlot):
+        """Handle a failed job. Notify Debugger for diagnosis."""
         name = slot.experiment_name
         log = self.runner.get_log(slot.job_id)
         self.pool.release(slot.slot_id)
 
-        fixable_patterns = [
-            "OutOfMemoryError", "CUDA out of memory",
-            "RuntimeError", "TypeError", "ValueError",
-        ]
-        is_fixable = any(p in log for p in fixable_patterns)
+        # Notify Debugger agent for diagnosis (non-blocking)
+        self.bus.post(AgentMessage(
+            sender="builder",
+            recipient="debugger",
+            type="job_failed",
+            payload={
+                "experiment_name": name,
+                "job_id": slot.job_id,
+                "log_dir": slot.log_dir,
+                "spec_path": os.path.join(self.config.paths.configs, "experiments", f"{name}.yaml"),
+                "seed": 1,
+                "error_summary": log[-500:] if log else "No log available",
+            }
+        ))
 
-        if is_fixable:
-            try:
-                self.chat(
-                    f"Training crashed with this error:\n{log[-2000:]}\n\n"
-                    f"Attempt to fix the issue."
-                )
-                spec = ExperimentSpec.from_yaml(
-                    os.path.join(self.config.paths.configs, "experiments", f"{name}.yaml"))
-                if self._validate_implementation(spec):
-                    self.chat("Commit the fix with git_commit tool.")
-                    new_slot = self.pool.get_free_slot()
-                    if new_slot:
-                        command = self._build_train_command(spec, seed=1)
-                        log_dir = os.path.join(self.config.paths.logs, name)
-                        job_id = self.runner.submit(command, f"{name}_fix")
-                        self.pool.assign(new_slot.slot_id, job_id, name, log_dir)
-                        self.system_logger.log(event="experiment_retry", spec=name)
-                        self.reset_conversation()
-                        return
-            except Exception:
-                pass
-
+        # Record crash immediately (Debugger may trigger retry later)
         result = ExperimentResult(
             name=name, commit="", algorithm=name,
             model="", metric_value=None, metric_std=None, seeds=1,
             training_seconds=time.time() - (slot.submitted_at or time.time()),
             peak_memory_mb=0, status="crash",
-            description=f"Training crashed: {log[-200:]}",
+            description=f"Training crashed: {log[-200:] if log else 'No log'}",
         )
         self.results.add(result)
-        self.system_logger.log(event="experiment_crashed", spec=name, error=log[-500:])
+        self.system_logger.log(event="experiment_crashed", spec=name, error=log[-500:] if log else "")
         self._write_and_submit_insight(name, result)
         self.reset_conversation()
+
+    def _handle_retry_request(self, msg: AgentMessage):
+        """Handle retry request from Debugger."""
+        name = msg.payload.get("experiment_name")
+        spec_path = msg.payload.get("spec_path")
+        seed = msg.payload.get("seed", 1)
+        attempt = msg.payload.get("attempt", 1)
+        reason = msg.payload.get("reason", "")
+
+        self.system_logger.log(
+            event="debugger_retry_request",
+            experiment=name,
+            attempt=attempt,
+            reason=reason
+        )
+
+        try:
+            spec = ExperimentSpec.from_yaml(spec_path)
+            new_slot = self.pool.get_free_slot()
+            if new_slot:
+                command = self._build_train_command(spec, seed=seed)
+                log_dir = os.path.join(self.config.paths.logs, f"{name}_retry{attempt}")
+                os.makedirs(log_dir, exist_ok=True)
+                job_id = self.runner.submit(command, f"{name}_retry{attempt}", log_dir=log_dir)
+                self.pool.assign(new_slot.slot_id, job_id, name, log_dir)
+                self.system_logger.log(event="experiment_retry", spec=name, attempt=attempt)
+            else:
+                # No free slot, re-queue the spec
+                self.queue.insert(spec, score=90.0)  # High priority for retry
+                self.system_logger.log(event="retry_requeued", spec=name)
+        except Exception as e:
+            self.system_logger.log(event="retry_failed", spec=name, error=str(e))
+
+    def _handle_fix_required(self, msg: AgentMessage):
+        """Handle fix request from Debugger for code-level issues."""
+        name = msg.payload.get("experiment_name")
+        spec_path = msg.payload.get("spec_path")
+        error_type = msg.payload.get("error_type")
+        root_cause = msg.payload.get("root_cause")
+        suggested_fix = msg.payload.get("suggested_fix")
+
+        self.system_logger.log(
+            event="debugger_fix_request",
+            experiment=name,
+            error_type=error_type
+        )
+
+        try:
+            # Use LLM to apply the fix
+            self.chat(
+                f"The Debugger diagnosed a failure in experiment '{name}'.\n\n"
+                f"**Error type:** {error_type}\n"
+                f"**Root cause:** {root_cause}\n"
+                f"**Suggested fix:** {suggested_fix}\n\n"
+                f"Please apply this fix to the code."
+            )
+
+            spec = ExperimentSpec.from_yaml(spec_path)
+            if self._validate_implementation(spec):
+                self.chat("Commit the fix with git_commit tool.")
+                new_slot = self.pool.get_free_slot()
+                if new_slot:
+                    command = self._build_train_command(spec, seed=1)
+                    log_dir = os.path.join(self.config.paths.logs, f"{name}_fixed")
+                    os.makedirs(log_dir, exist_ok=True)
+                    job_id = self.runner.submit(command, f"{name}_fixed", log_dir=log_dir)
+                    self.pool.assign(new_slot.slot_id, job_id, name, log_dir)
+                    self.system_logger.log(event="experiment_fixed_resubmit", spec=name)
+                self.reset_conversation()
+        except Exception as e:
+            self.system_logger.log(event="fix_application_failed", spec=name, error=str(e))
+            self.reset_conversation()
 
     def _persist_pairs(self):
         state_path = os.path.join(self.config.paths.workspace, ".state", "pending_pairs.json")

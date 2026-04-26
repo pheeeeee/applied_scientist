@@ -11,12 +11,12 @@ You define the task. The system supplies the research team.
                    /    |    \
              Explorer  Critic  Builder
                 |        |       |
-                |        |    GPU Pool
-                v        v
-             Shared Knowledge Base
+                |        |    GPU Pool ←── Debugger
+                v        v                    ↑
+             Shared Knowledge Base      failure diagnosis
 ```
 
-Four AI agents — **Explorer** (literature), **Critic** (quality gate), **Builder** (implementation), **Orchestrator** (your interface) — run concurrently on CPU. Training jobs are dispatched to a pool of GPUs. The system is designed so that:
+Five AI agents — **Explorer** (literature), **Critic** (quality gate), **Builder** (implementation), **Debugger** (failure diagnosis), **Orchestrator** (your interface) — run concurrently on CPU. Training jobs are dispatched to a pool of GPUs. The system is designed so that:
 
 - **Any ML task** can be plugged in via a Task Adapter (RL, NLP, CV, etc.)
 - **Any LLM** can power the agents (Claude, GPT, Gemini, Llama, or any OpenAI-compatible endpoint)
@@ -41,6 +41,7 @@ Four AI agents — **Explorer** (literature), **Critic** (quality gate), **Build
 - [Architecture](#architecture)
 - [Deployment](#deployment)
 - [Cost Estimates](#cost-estimates)
+- [Subscription Mode](#subscription-mode-claudecode-backend)
 - [Related Work](#related-work)
 - [Citation](#citation)
 
@@ -68,6 +69,10 @@ After each experiment, the Builder writes a draft insight (observations, compari
 
 The Explorer reads the knowledge base continuously, adapting its literature search based on what the system has learned.
 
+**Failure Diagnosis (Debugger)**
+
+When a training job fails (SLURM errors, CUDA out-of-memory, Python exceptions), the Builder notifies the Debugger agent. The Debugger reads the job's error logs and diagnoses the failure using pattern matching for common errors (OOM, module not found, CUDA errors) and LLM analysis for unknown failures. Based on severity, it either requests an automatic retry (transient failures), notifies the Builder of required fixes (code/config issues), or escalates to the Orchestrator (infrastructure problems). This keeps the GPU pool running efficiently without human intervention for routine failures.
+
 ---
 
 ## Prerequisites
@@ -76,7 +81,9 @@ The Explorer reads the knowledge base continuously, adapting its literature sear
 
 - Python 3.10+
 - git
-- At least one LLM API key (Anthropic, OpenAI, or Google)
+- At least one of:
+  - LLM API key (Anthropic, OpenAI, or Google) — per-token billing
+  - Claude Code CLI with Claude Pro/Max subscription — flat-rate billing (see [Subscription Mode](#subscription-mode-claudecode-backend))
 - At least one GPU for training (local or cluster)
 
 **For SLURM clusters:**
@@ -87,6 +94,9 @@ The Explorer reads the knowledge base continuously, adapting its literature sear
 
   Test with: `curl -s https://api.anthropic.com/v1/messages -o /dev/null -w "%{http_code}"`
   — `401` means reachable, timeout means firewalled.
+
+- See `docs/slurm_debugging.md` for common SLURM errors and solutions
+- Example sbatch scripts in `docs/examples/`
 
 **For local machines:**
 
@@ -322,6 +332,9 @@ llm:
   builder:
     backend: anthropic
     model: claude-sonnet-4-6
+  debugger:                        # diagnoses job failures (optional, defaults to builder)
+    backend: anthropic
+    model: claude-haiku-4-5-20251001
   orchestrator:
     backend: anthropic
     model: claude-haiku-4-5-20251001
@@ -329,6 +342,7 @@ llm:
 compute:
   backend: slurm                 # slurm | local
   slurm:
+    account: gts-mypi            # REQUIRED on some clusters (e.g., PACE)
     partition: gpu
     gres: "gpu:1"
     mem: "48G"
@@ -509,7 +523,25 @@ llm:
     backend: openai_compatible
     model: llama3
     base_url: http://localhost:11434/v1
+
+# Claude Code CLI (subscription-based, no API key needed)
+# Requires: claude CLI installed, Claude Pro/Max subscription
+llm:
+  explorer:
+    backend: claudecode
+    model: haiku
+  critic:
+    backend: claudecode
+    model: sonnet
+  builder:
+    backend: claudecode
+    model: sonnet
+  orchestrator:
+    backend: claudecode
+    model: haiku
 ```
+
+See [Subscription Mode](#subscription-mode-claudecode-backend) for details on the `claudecode` backend.
 
 **Option B: Custom backend — implement 2 methods.**
 
@@ -937,6 +969,7 @@ Status values: `baseline`, `keep`, `crash`, `early_stop`, `timeout`, `validation
 | **Explorer** | `configs/drafts/*.yaml`, `results/explorer_journal.jsonl` | `results/results.tsv`, `results/knowledge.md` (synthesis), `configs/drafts/` + `configs/experiments/` (name dedup) |
 | **Critic** | Moves `drafts/` → `configs/experiments/`, inserts into `priority_queue.yaml`, appends to `results/review_log.jsonl`, appends to `results/ideas_for_system2.md` | `configs/drafts/*.yaml`, `results/results.tsv`, `results/knowledge.md`, `priority_queue.yaml` |
 | **Builder** | Edits task source code, `git commit`, appends to `results/results.tsv`, writes to `results/knowledge.md` (approved insights only), creates `results/logs/<name>/` | `configs/experiments/*.yaml`, `priority_queue.yaml` (pop), `results/results.tsv`, `results/logs/<name>/progress.json` |
+| **Debugger** | Appends to `results/system_events.jsonl` (diagnosis events) | `results/logs/<name>/slurm-*.out` (error logs) |
 | **Orchestrator** | Nothing persistent | Everything (read-only, for status display) |
 | **Training script** | `results/logs/<name>/progress.json`, `results/checkpoints/<name>/`, stdout/stderr | Task source code |
 | **System** | `.state/gpu_slots.json`, `.state/pending_messages.json`, `results/system_events.jsonl`, `git init` | Config YAML, all state files on recovery |
@@ -951,17 +984,18 @@ Every experiment is reproducible from its **git commit hash** (in `results.tsv`)
 
 ### Agents and Tools
 
-| Tool | Orchestrator | Explorer | Critic | Builder |
-|------|:---:|:---:|:---:|:---:|
-| Web search | | x | | |
-| Paper/PDF reader | | x | | |
-| Read files | x | x | x | x |
-| Write files | | x | x | x |
-| Edit code | | | | x |
-| Shell execution (sandboxed) | | | | x |
-| Git operations | | | | x |
-| Job submission | | | | x |
-| Structured review tools | | | x | |
+| Tool | Orchestrator | Explorer | Critic | Builder | Debugger |
+|------|:---:|:---:|:---:|:---:|:---:|
+| Web search | | x | | | |
+| Paper/PDF reader | | x | | | |
+| Read files | x | x | x | x | x |
+| Write files | | x | x | x | |
+| List directory | x | | | | x |
+| Edit code | | | | x | |
+| Shell execution (sandboxed) | | | | x | |
+| Git operations | | | | x | |
+| Job submission | | | | x | |
+| Structured review tools | | | x | | |
 
 ### Non-Blocking Review Flow
 
@@ -1014,6 +1048,7 @@ Baseline seeds run sequentially on one slot, leaving other GPUs free for experim
 
 - **Crash recovery:** GPU slot assignments and pending messages are persisted to `.state/`. On restart, the system reconciles with `sacct` or process state.
 - **Watchdog:** Monitors agent threads; restarts crashed threads up to 3 times.
+- **Automated failure diagnosis:** Debugger agent analyzes job failures using pattern matching (OOM, CUDA errors, module not found) and LLM fallback, then requests retries or fixes automatically.
 - **Atomic writes:** All shared state files use atomic write-then-rename to prevent corruption.
 - **Context management:** Agent conversations are automatically trimmed when approaching context limits.
 - **Shell sandboxing:** Builder's shell commands are restricted to workspace, with dangerous patterns blocked.
@@ -1083,8 +1118,9 @@ LLM API costs depend on which models you choose. Example with Claude:
 | Explorer | Haiku | ~$0.26 |
 | Critic | Sonnet | ~$2.25 |
 | Builder | Sonnet | ~$4.95 |
+| Debugger | Haiku | ~$0.05 |
 | Orchestrator | Haiku | ~$0.03 |
-| **Total** | | **~$7.50/day** |
+| **Total** | | **~$7.55/day** |
 
 **Budget options:**
 
@@ -1098,6 +1134,82 @@ LLM API costs depend on which models you choose. Example with Claude:
 Mix and match across providers to optimize cost/quality per agent. Use the `cost` command while running to monitor spend in real-time.
 
 Set `cost_alert_threshold` in config to get alerts when cumulative cost exceeds a threshold.
+
+---
+
+## Subscription Mode (claudecode backend)
+
+Applied Scientist supports routing LLM calls through the `claude` CLI (Claude Code) instead of the Anthropic API. This uses a Claude Pro/Max **subscription** (flat monthly rate) rather than per-token API credits.
+
+### When to use subscription mode
+
+**Use subscription mode when:**
+- You have a Claude Pro/Max subscription and want to avoid API costs
+- You're developing/debugging the system and need cheap iteration
+- You're doing small, bounded runs where rate limits won't bite
+
+**Do NOT use subscription mode when:**
+- You need a continuous multi-day orchestrator run
+- You need reliable throughput and predictable wall time
+- You are on a deadline that can't afford stalls
+- You are concerned about Anthropic account standing (ToS)
+
+### Prerequisites
+
+1. **Claude Code CLI installed and on PATH**
+   ```bash
+   # Verify installation
+   claude --version
+   ```
+
+2. **Active Claude Pro/Max subscription** linked to the CLI's OAuth credentials
+
+3. **Credentials accessible** — by default in `~/.claude`, or set `CLAUDE_CONFIG_DIR`
+
+### Configuration
+
+Use `backend: claudecode` in your config:
+
+```yaml
+llm:
+  explorer:
+    backend: claudecode
+    model: haiku
+  critic:
+    backend: claudecode
+    model: sonnet
+  builder:
+    backend: claudecode
+    model: sonnet
+  orchestrator:
+    backend: claudecode
+    model: haiku
+```
+
+See `configs/examples/soccer_twos_subscription.yaml` for a complete example.
+
+### Limitations
+
+1. **Rate limits.** Consumer subscriptions are rate-limited for interactive human use. Four agents making continuous parallel calls **will** hit those limits. Expect stalls and retries.
+
+2. **Terms of Service.** Using a consumer subscription to drive an autonomous multi-agent system may violate Anthropic's acceptable use policy. **Read the current Claude Pro/Max terms before running.** Risk of account suspension.
+
+3. **Subprocess overhead.** Each completion spawns a new `claude` process (~100-500 ms startup). Throughput is lower than direct API.
+
+4. **Tool-call emulation.** Claude Code doesn't expose native tool_use blocks. We emulate via JSON schema injection in prompts — less faithful than API tool calling.
+
+5. **Usage accounting.** Token counts may be zeros. The subscription isn't billed per token anyway.
+
+### Cost comparison
+
+| Mode | Billing | Daily cost (typical) | Best for |
+|------|---------|---------------------|----------|
+| API (Haiku + Sonnet) | Per-token | ~$7.50/day | Production sweeps |
+| API (all Haiku) | Per-token | ~$2.60/day | Budget runs |
+| API + prompt caching | Per-token | ~$2-4/day | Cost-optimized production |
+| **Subscription** | $20-200/month flat | $0 marginal | Development, debugging |
+
+In most realistic budget-constrained cases, **API + prompt caching + Haiku for cheap roles is cheaper and more reliable** than subscription mode for production sweeps.
 
 ---
 

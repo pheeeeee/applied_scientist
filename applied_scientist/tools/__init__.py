@@ -20,6 +20,7 @@ AGENT_TOOLS = {
                  "submit_insight_review", "submit_triage"],
     "builder":  ["read_file", "write_file", "edit_file", "list_directory",
                  "run_command", "git_commit", "git_log", "git_diff", "git_reset"],
+    "debugger": ["read_file", "list_directory"],  # reads SLURM logs for diagnosis
     "orchestrator": ["read_file", "list_directory"],
 }
 

@@ -14,6 +14,9 @@ gemini = ["google-generativeai>=0.5"]
 search = ["requests>=2.31"]
 pdf = ["pypdf2>=3.0", "beautifulsoup4>=4.12"]
 tuning = ["optuna>=3.6"]
+# claudecode backend has no Python deps (shells out to `claude` CLI)
+# but we list it here for documentation; install separately via Claude Code
+claudecode = []
 all = ["applied-scientist[anthropic,openai,gemini,search,pdf,tuning]"]
 dev = ["pytest>=8.0", "pytest-cov>=5.0"]
 
